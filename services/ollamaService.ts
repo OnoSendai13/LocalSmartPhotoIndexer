@@ -228,7 +228,74 @@ IMPORTANT: Return ONLY the JSON array. Example: ["Nature", "Dog", "Outdoor", "Su
     let responseText = data.response || '';
     console.log(`📝 Response text (raw):`, JSON.stringify(responseText));
 
-    // Check if response is empty
+    // Check if response is empty but thinking field has content (Qwen3-VL behavior)
+    if ((!responseText || responseText.trim() === '') && data.thinking) {
+      console.log('🧠 Response empty but found thinking field, extracting tags from thinking...');
+      console.log(`🧠 Thinking content preview:`, data.thinking.substring(0, 500));
+      
+      // Try to extract tags from the thinking content
+      // Qwen3 often puts its analysis in the thinking field
+      const thinkingText = data.thinking;
+      
+      // Look for JSON array in thinking
+      const jsonMatch = thinkingText.match(/\[[\s\S]*?\]/);
+      if (jsonMatch) {
+        try {
+          const tags = JSON.parse(jsonMatch[0]);
+          if (Array.isArray(tags) && tags.length > 0) {
+            const cleanedTags = tags
+              .map((t: any) => String(t).trim())
+              .filter((t: string) => t.length > 2 && t.length < 30)
+              .map((t: string) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase())
+              .slice(0, 10);
+            console.log(`✅ Extracted tags from thinking:`, cleanedTags);
+            return cleanedTags.length > 0 ? cleanedTags : ["Uncategorized"];
+          }
+        } catch (e) {
+          console.log('Could not parse JSON from thinking field');
+        }
+      }
+      
+      // Fallback: extract keywords from thinking text
+      // Look for patterns like "Main Content: Nature" or keywords after categories
+      const categoryPatterns = [
+        /Main Content[:\s]+(\w+)/gi,
+        /Specific Subject[:\s]+(\w+)/gi,
+        /Location[:\s]+(\w+)/gi,
+        /Time[:\s]+(\w+)/gi,
+        /Lighting[:\s]+(\w+)/gi,
+        /Activity[:\s]+(\w+)/gi,
+      ];
+      
+      const extractedWords: string[] = [];
+      for (const pattern of categoryPatterns) {
+        const matches = thinkingText.matchAll(pattern);
+        for (const match of matches) {
+          if (match[1] && match[1].length > 2 && match[1].length < 20) {
+            extractedWords.push(match[1]);
+          }
+        }
+      }
+      
+      // Also look for common descriptive words
+      const commonWords = thinkingText.match(/\b(Nature|Urban|People|Portrait|Woman|Man|Building|Outdoor|Indoor|Sunny|Night|Day|Forest|Beach|Street|City|Animal|Dog|Cat|Food|Travel|Art|Museum|Statue|Walking|Sitting|Standing|Posing|Tattoo|Model|Fashion)\b/gi);
+      if (commonWords) {
+        extractedWords.push(...commonWords);
+      }
+      
+      if (extractedWords.length > 0) {
+        const uniqueTags = [...new Set(extractedWords)]
+          .map((t: string) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase())
+          .slice(0, 10);
+        console.log(`✅ Extracted keywords from thinking:`, uniqueTags);
+        return uniqueTags;
+      }
+      
+      console.warn('⚠️ Could not extract meaningful tags from thinking field');
+      return ["Uncategorized"];
+    }
+    
+    // Standard empty response handling (no thinking field)
     if (!responseText || responseText.trim() === '') {
       console.error('❌ Ollama returned empty response!');
       console.log('💡 This might be a model compatibility issue. Try a different model.');
