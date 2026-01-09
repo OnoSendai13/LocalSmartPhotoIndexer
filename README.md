@@ -247,16 +247,33 @@ Your photo index is stored locally in your browser using **IndexedDB**:
 3. Select your previously exported JSON file
 4. Your tags will be restored
 
+### Resume After Crash / Interruption
+
+If indexing is interrupted (browser closed, crash, or you stop it):
+
+1. **Relaunch the app** (`npm run dev`)
+2. **Select the same folder again**
+3. The app automatically detects already-indexed photos and **skips them**
+4. Only new/unindexed photos will be processed
+
+Console output will show:
+```
+📚 Found 1234 already indexed photos in database
+⏭️ Skipping 1234 already indexed photos, processing 567 new ones
+```
+
+This means you can safely index huge photo collections (10,000+) without worrying about crashes - progress is saved after each photo!
+
 ### Data Location
 
 Data is stored in IndexedDB under:
-- **Database**: `PhotoIndexerDB`
+- **Database**: `LocalPhotoIndexer`
 - **Stores**: `photos` (your indexed photos), `settings` (your preferences)
 
 To manually clear data:
 1. Open browser DevTools (F12)
 2. Go to Application > Storage > IndexedDB
-3. Delete `PhotoIndexerDB`
+3. Delete `LocalPhotoIndexer`
 
 Or use the "Clear All Data" button in the Data Management modal.
 

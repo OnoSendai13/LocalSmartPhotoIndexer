@@ -315,6 +315,17 @@ const App: React.FC = () => {
     const firstFile = files[0];
     const folderPath = firstFile.webkitRelativePath?.split('/')[0] || 'Imported';
 
+    // Load already indexed photos to skip duplicates
+    let alreadyIndexedPaths = new Set<string>();
+    let alreadyIndexedCount = 0;
+    try {
+      const savedPhotos = await getAllPhotos();
+      alreadyIndexedPaths = new Set(savedPhotos.map(p => p.path));
+      console.log(`📚 Found ${savedPhotos.length} already indexed photos in database`);
+    } catch (e) {
+      console.warn('Could not load existing photos for duplicate check');
+    }
+
     const newPhotos: Photo[] = [];
     const newQueueIds: string[] = [];
     const filesArray = Array.from(files);
@@ -367,9 +378,16 @@ const App: React.FC = () => {
         continue;
       }
 
+      const relativePath = file.webkitRelativePath || file.name;
+      
+      // Skip already indexed photos (duplicate detection)
+      if (alreadyIndexedPaths.has(relativePath)) {
+        alreadyIndexedCount++;
+        continue;
+      }
+
       const id = Math.random().toString(36).substring(7);
       const previewUrl = URL.createObjectURL(file);
-      const relativePath = file.webkitRelativePath || file.name;
 
       newPhotos.push({
         id,
@@ -391,13 +409,26 @@ const App: React.FC = () => {
 
     setIsScanning(false);
     
-    console.log(`✅ Scan complete: ${newPhotos.length} images found out of ${filesArray.length} files`);
+    console.log(`✅ Scan complete: ${newPhotos.length} new images to index`);
+    console.log(`📁 Total files scanned: ${filesArray.length}`);
+    console.log(`⏭️ Skipped (already indexed): ${alreadyIndexedCount}`);
+    
+    if (newPhotos.length === 0 && alreadyIndexedCount > 0) {
+      alert(`All ${alreadyIndexedCount} photos in this folder are already indexed! Nothing new to process.`);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
     
     if (newPhotos.length === 0) {
       alert('No image files found in the selected folder.');
       // Reset the input so user can select again
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
+    }
+    
+    // Show info if some were skipped
+    if (alreadyIndexedCount > 0) {
+      console.log(`ℹ️ Skipping ${alreadyIndexedCount} already indexed photos, processing ${newPhotos.length} new ones`);
     }
 
     // Add photos and start processing
