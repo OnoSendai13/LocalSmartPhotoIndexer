@@ -10,51 +10,33 @@ export interface OllamaConfig {
   model: string;
 }
 
-// Recommended vision models with their characteristics
+// Recommended vision models with their characteristics (January 2025)
 export const RECOMMENDED_MODELS = [
   { 
-    id: 'qwen3-vl:8b', 
-    name: 'Qwen3-VL 8B', 
-    vram: '~12GB', 
-    description: 'Latest & best quality, 32 language OCR',
+    id: 'minicpm-v', 
+    name: 'MiniCPM-V 2.6', 
+    vram: '~8GB', 
+    description: 'BEST for photo classification - highly recommended',
     recommended: true 
-  },
-  { 
-    id: 'qwen3-vl:2b', 
-    name: 'Qwen3-VL 2B', 
-    vram: '~4GB', 
-    description: 'Fast, good for limited hardware' 
   },
   { 
     id: 'qwen2.5vl:7b', 
     name: 'Qwen2.5-VL 7B', 
     vram: '~8GB', 
-    description: 'Excellent balance quality/speed',
+    description: 'Good alternative, fast',
     recommended: true 
   },
   { 
-    id: 'qwen2.5vl:3b', 
-    name: 'Qwen2.5-VL 3B', 
-    vram: '~4GB', 
-    description: 'Faster, decent quality' 
-  },
-  { 
-    id: 'minicpm-v', 
-    name: 'MiniCPM-V 2.6', 
-    vram: '~8GB', 
-    description: 'Excellent for documents & OCR' 
+    id: 'qwen3-vl:8b', 
+    name: 'Qwen3-VL 8B', 
+    vram: '~12GB', 
+    description: 'Has thinking mode issues - use with caution' 
   },
   { 
     id: 'llama3.2-vision:11b', 
     name: 'Llama 3.2 Vision 11B', 
     vram: '~12GB', 
     description: "Meta's vision model" 
-  },
-  { 
-    id: 'llava-llama3', 
-    name: 'LLaVA-Llama3', 
-    vram: '~8GB', 
-    description: 'Good general purpose' 
   },
   { 
     id: 'llava:7b', 

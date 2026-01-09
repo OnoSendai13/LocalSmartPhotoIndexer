@@ -245,7 +245,7 @@ const App: React.FC = () => {
       
       setPhotos(prev => prev.map(p => p.id === photoId ? updatedPhoto : p));
       
-      // Save to IndexedDB
+      // Auto-save to IndexedDB immediately (crash-safe)
       const storedPhoto: StoredPhoto = {
         id: updatedPhoto.id,
         name: updatedPhoto.name,
@@ -259,6 +259,7 @@ const App: React.FC = () => {
         indexedAt: Date.now(),
       };
       await savePhoto(storedPhoto);
+      console.log(`💾 Saved to IndexedDB: ${photo.name}`);
       
     } catch (error) {
       console.error(`❌ Failed to process ${photo.name}`, error);
@@ -329,18 +330,41 @@ const App: React.FC = () => {
         currentFile: file.name 
       });
       
-      // Skip non-images - but also check file extension as fallback
-      const isImageByType = file.type.startsWith('image/');
-      const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.heic', '.heif'];
-      const isImageByExt = imageExtensions.some(ext => file.name.toLowerCase().endsWith(ext));
+      // Only allow standard image formats - exclude RAW files
+      const fileName = file.name.toLowerCase();
       
-      if (!isImageByType && !isImageByExt) {
-        continue;
+      // RAW formats to exclude
+      const rawExtensions = [
+        '.cr2', '.cr3',     // Canon
+        '.nef', '.nrw',     // Nikon
+        '.arw', '.srf',     // Sony
+        '.orf',             // Olympus
+        '.rw2',             // Panasonic
+        '.raf',             // Fujifilm
+        '.dng',             // Adobe DNG
+        '.raw', '.rwl',     // Leica
+        '.pef',             // Pentax
+        '.srw',             // Samsung
+        '.x3f',             // Sigma
+        '.3fr',             // Hasselblad
+        '.iiq',             // Phase One
+        '.erf',             // Epson
+        '.kdc', '.dcr',     // Kodak
+      ];
+      
+      // Check if it's a RAW file - skip it
+      const isRawFile = rawExtensions.some(ext => fileName.endsWith(ext));
+      if (isRawFile) {
+        continue; // Skip RAW files silently
       }
       
-      // Log if type was missing but extension matched
-      if (!isImageByType && isImageByExt) {
-        console.log(`⚠️ File ${file.name} has no MIME type but matches extension`);
+      // Allowed image formats only
+      const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'];
+      const isAllowedByExt = allowedExtensions.some(ext => fileName.endsWith(ext));
+      const isImageByType = file.type.startsWith('image/') && !file.type.includes('raw');
+      
+      if (!isImageByType && !isAllowedByExt) {
+        continue;
       }
 
       const id = Math.random().toString(36).substring(7);

@@ -97,7 +97,7 @@ export interface AppSettings {
 export const DEFAULT_SETTINGS: AppSettings = {
   provider: 'ollama',
   ollamaUrl: 'http://localhost:11434',
-  ollamaModel: 'qwen2.5vl:7b',
+  ollamaModel: 'minicpm-v',  // Best model for photo classification (Jan 2025)
 };
 
 // ============================================================

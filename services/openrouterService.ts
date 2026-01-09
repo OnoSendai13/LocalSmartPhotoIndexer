@@ -9,16 +9,20 @@ export interface OpenRouterConfig {
   model: string;
 }
 
-// Popular vision models available on OpenRouter
+// Popular vision models available on OpenRouter (January 2025)
 export const OPENROUTER_VISION_MODELS = [
-  { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet', price: '$$' },
-  { id: 'anthropic/claude-3-haiku', name: 'Claude 3 Haiku (Fast)', price: '$' },
-  { id: 'openai/gpt-4o', name: 'GPT-4o', price: '$$$' },
-  { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', price: '$' },
-  { id: 'google/gemini-pro-1.5', name: 'Gemini Pro 1.5', price: '$$' },
+  // FREE models (community supported)
+  { id: 'qwen/qwen2.5-vl-7b-instruct:free', name: 'Qwen2.5-VL 7B (FREE)', price: 'FREE' },
+  { id: 'meta-llama/llama-3.2-11b-vision-instruct:free', name: 'Llama 3.2 11B Vision (FREE)', price: 'FREE' },
+  // Cheap models
   { id: 'google/gemini-flash-1.5', name: 'Gemini Flash 1.5 (Fast)', price: '$' },
+  { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', price: '$' },
+  { id: 'anthropic/claude-3-haiku', name: 'Claude 3 Haiku (Fast)', price: '$' },
+  // Better quality
   { id: 'qwen/qwen-2-vl-72b-instruct', name: 'Qwen2-VL 72B', price: '$$' },
-  { id: 'meta-llama/llama-3.2-90b-vision-instruct', name: 'Llama 3.2 90B Vision', price: '$$' },
+  { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet', price: '$$' },
+  { id: 'google/gemini-pro-1.5', name: 'Gemini Pro 1.5', price: '$$' },
+  { id: 'openai/gpt-4o', name: 'GPT-4o', price: '$$$' },
 ];
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';

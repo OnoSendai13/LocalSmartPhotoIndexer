@@ -1,6 +1,6 @@
 <div align="center">
 
-# 📸 Local Smart Photo Indexer
+# Local Smart Photo Indexer
 
 **AI-powered photo organization that runs 100% on your machine**
 
@@ -8,29 +8,28 @@
 [![Ollama](https://img.shields.io/badge/Ollama-Required-blue)](https://ollama.com)
 [![React](https://img.shields.io/badge/React-19-61DAFB)](https://react.dev)
 
-<img src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" alt="Local Smart Photo Indexer Banner" width="800"/>
-
 *Index and organize your photos using local AI vision models. Your data never leaves your computer.*
 
-[Features](#-features) • [Quick Start](#-quick-start) • [Installation](#-installation) • [Model Selection](#-choosing-the-right-model) • [Cloud Alternatives](#-cloud-alternatives) • [Troubleshooting](#-troubleshooting)
+[Features](#-features) | [Quick Start](#-quick-start) | [Model Selection](#-recommended-models) | [Cloud Alternatives](#-cloud-alternatives-api) | [Troubleshooting](#-troubleshooting)
 
 </div>
 
 ---
 
-## ✨ Features
+## Features
 
-- 🔒 **100% Private** - All processing happens locally, no data sent to external servers
-- 🤖 **AI-Powered Tagging** - Automatic semantic tags using vision language models
-- 🏷️ **Smart Categories** - Environment, Living, Time & Light, Activity, Objects
-- ✏️ **Manual Editing** - Add, remove, and customize tags per photo
-- 📁 **Folder Import** - Drag & drop entire folders for batch processing
-- 🎨 **Modern UI** - Beautiful dark theme with responsive design
-- ☁️ **Cloud Options** - Optional OpenRouter/Gemini API for users without GPU
+- **100% Private** - All processing happens locally, no data sent to external servers
+- **AI-Powered Tagging** - Automatic semantic tags using vision language models
+- **Smart Categories** - People, Animals, Scenes, Locations, Weather, Activities, Objects
+- **Manual Editing** - Add, remove, and customize tags per photo
+- **Folder Import** - Import entire folders with automatic RAW file filtering
+- **Persistent Storage** - Tags saved locally in IndexedDB with auto-save during indexing
+- **Export/Import** - Backup your index to JSON and restore anytime
+- **Cloud Options** - Optional OpenRouter/Gemini API for users without GPU
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 - [Node.js](https://nodejs.org/) v18 or higher
@@ -39,17 +38,10 @@
 ### 5-Minute Setup
 
 ```bash
-# 1. Install Ollama (if not already installed)
-# Visit https://ollama.com/download or use:
-curl -fsSL https://ollama.com/install.sh | sh   # Linux/macOS
-# Windows: Download installer from https://ollama.com/download
+# 1. Install Ollama (visit https://ollama.com/download)
 
-# 2. Pull a vision model (choose based on your hardware - see Model Selection below)
-ollama pull qwen2.5vl:7b       # Recommended for most users (8GB+ VRAM)
-# OR
-ollama pull llama3.2-vision    # Good alternative (11B model)
-# OR  
-ollama pull minicpm-v          # Excellent quality/performance ratio
+# 2. Pull the recommended vision model
+ollama pull minicpm-v
 
 # 3. Start Ollama with CORS enabled (REQUIRED for browser access)
 OLLAMA_ORIGINS="*" ollama serve
@@ -65,131 +57,114 @@ Open http://localhost:5173 in your browser and start importing photos!
 
 ---
 
-## 📦 Installation
+## Recommended Models
+
+### Best Choice: `minicpm-v` (Recommended)
+
+After extensive testing, **MiniCPM-V** provides the best results for photo classification:
+
+```bash
+ollama pull minicpm-v
+```
+
+**Why minicpm-v?**
+- Excellent accuracy for everyday photos (people, landscapes, events)
+- Good balance of speed and quality
+- ~8GB VRAM required
+- Specifically optimized for visual understanding
+
+### Model Comparison (January 2025)
+
+| Model | VRAM | Speed | Accuracy | Recommendation |
+|-------|------|-------|----------|----------------|
+| **minicpm-v** | ~8GB | Fast | Excellent | **Best choice for photo indexing** |
+| qwen2.5vl:7b | ~8GB | Fast | Good | Good alternative |
+| qwen3-vl:8b | ~12GB | Medium | Good* | *Has "thinking mode" issues |
+| llama3.2-vision | ~12GB | Medium | Good | Meta's option |
+| llava:7b | ~6GB | Very Fast | Average | Lightweight option |
+| moondream | ~2GB | Very Fast | Basic | For very limited hardware |
+
+> **Note**: `qwen3-vl` models have a "thinking mode" that can cause inconsistent results. We recommend `minicpm-v` or `qwen2.5vl` for best experience.
+
+### Hardware Recommendations
+
+| Your Setup | Recommended Model | Command |
+|------------|-------------------|---------|
+| No GPU / 8GB RAM | Use Cloud API (see below) | - |
+| 8GB+ VRAM | minicpm-v | `ollama pull minicpm-v` |
+| 12GB+ VRAM | minicpm-v or qwen2.5vl:7b | `ollama pull minicpm-v` |
+
+---
+
+## Installation
 
 ### Step 1: Install Ollama
 
 <details>
-<summary><b>🐧 Linux</b></summary>
+<summary><b>Linux</b></summary>
 
 ```bash
-# One-line installer
 curl -fsSL https://ollama.com/install.sh | sh
-
-# Or via package manager
-# Arch Linux
-yay -S ollama
-
-# Ubuntu/Debian (manual)
-wget https://ollama.com/download/ollama-linux-amd64
-chmod +x ollama-linux-amd64
-sudo mv ollama-linux-amd64 /usr/local/bin/ollama
 ```
 
 </details>
 
 <details>
-<summary><b>🍎 macOS</b></summary>
+<summary><b>macOS</b></summary>
 
 ```bash
-# Using Homebrew (recommended)
 brew install ollama
-
 # Or download from https://ollama.com/download
-# Double-click the .dmg and drag to Applications
 ```
 
 </details>
 
 <details>
-<summary><b>🪟 Windows</b></summary>
+<summary><b>Windows</b></summary>
 
-1. Download the installer from [ollama.com/download](https://ollama.com/download)
-2. Run `OllamaSetup.exe`
-3. Follow the installation wizard
-
-**Important for Windows users:** To enable CORS, you need to set an environment variable:
+1. Download from [ollama.com/download](https://ollama.com/download)
+2. Run the installer
+3. Set CORS environment variable:
 
 ```powershell
 # PowerShell (run as Administrator)
 [System.Environment]::SetEnvironmentVariable('OLLAMA_ORIGINS', '*', 'User')
-
-# Or via System Properties:
-# 1. Press Win + R, type "sysdm.cpl", press Enter
-# 2. Go to Advanced tab → Environment Variables
-# 3. Under User variables, click New
-# 4. Variable name: OLLAMA_ORIGINS
-# 5. Variable value: *
-# 6. Restart Ollama
 ```
 
 </details>
 
 <details>
-<summary><b>🐳 Docker</b></summary>
+<summary><b>Docker (with GPU)</b></summary>
 
 ```bash
-# CPU only
-docker run -d -v ollama:/root/.ollama -p 11434:11434 \
-  -e OLLAMA_ORIGINS="*" \
-  --name ollama ollama/ollama
-
-# With NVIDIA GPU
 docker run -d --gpus=all -v ollama:/root/.ollama -p 11434:11434 \
   -e OLLAMA_ORIGINS="*" \
   --name ollama ollama/ollama
 
-# Pull a model inside the container
-docker exec -it ollama ollama pull qwen2.5vl:7b
+# Pull the model
+docker exec ollama ollama pull minicpm-v
 ```
 
 </details>
 
-### Step 2: Download a Vision Model
+### Step 2: Start Ollama with CORS
 
-Choose a model based on your hardware (see [Choosing the Right Model](#-choosing-the-right-model)):
-
-```bash
-# Pull your chosen model
-ollama pull <model-name>
-
-# Examples:
-ollama pull qwen3-vl:8b        # Latest & best (needs ~12GB VRAM)
-ollama pull qwen2.5vl:7b       # Excellent all-rounder
-ollama pull minicpm-v          # Great quality, efficient
-ollama pull llama3.2-vision    # Meta's vision model
-ollama pull llava:7b           # Lightweight option
-```
-
-### Step 3: Start Ollama with CORS Enabled
-
-**⚠️ This is required for the browser to communicate with Ollama!**
+**This is required for the browser to communicate with Ollama!**
 
 ```bash
-# Linux/macOS - Start with CORS enabled
+# Linux/macOS
 OLLAMA_ORIGINS="*" ollama serve
 
-# Or set it permanently in your shell profile (.bashrc, .zshrc):
-export OLLAMA_ORIGINS="*"
-
-# Windows (PowerShell)
-$env:OLLAMA_ORIGINS="*"; ollama serve
-
-# Windows (after setting environment variable as shown above)
+# Windows (after setting environment variable)
 ollama serve
 ```
 
-### Step 4: Run the Application
+### Step 3: Run the App
 
 ```bash
-# Clone the repository
 git clone https://github.com/OnoSendai13/LocalSmartPhotoIndexer.git
 cd LocalSmartPhotoIndexer
-
-# Install dependencies
 npm install
-
-# Start the development server
 npm run dev
 ```
 
@@ -197,246 +172,152 @@ Open **http://localhost:5173** in your browser.
 
 ---
 
-## 🧠 Choosing the Right Model
+## Cloud Alternatives (API)
 
-### Model Comparison Table
+If you don't have a GPU or want faster/better results, you can use cloud APIs.
 
-| Model | VRAM Required | Speed | Quality | Best For |
-|-------|---------------|-------|---------|----------|
-| **qwen3-vl:8b** | ~12GB | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | Best overall quality, latest tech |
-| **qwen3-vl:2b** | ~4GB | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | Quick tagging, limited hardware |
-| **qwen2.5vl:7b** | ~8GB | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | Best balance quality/speed |
-| **qwen2.5vl:3b** | ~4GB | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | Faster processing, good quality |
-| **minicpm-v** | ~8GB | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | Excellent OCR, documents |
-| **llama3.2-vision:11b** | ~12GB | ⭐⭐⭐ | ⭐⭐⭐⭐ | Meta's latest vision model |
-| **llava-llama3** | ~8GB | ⭐⭐⭐⭐ | ⭐⭐⭐ | Good general purpose |
-| **llava:7b** | ~6GB | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | Fast, lightweight |
-| **moondream** | ~2GB | ⭐⭐⭐⭐⭐ | ⭐⭐ | Very low resources |
-
-### Hardware Recommendations
-
-<details>
-<summary><b>💰 Budget Setup (8GB RAM, No GPU)</b></summary>
-
-Best models:
-- `moondream` - Runs on CPU
-- `llava:7b` - Acceptable on CPU but slow
-- `qwen2.5vl:3b` - Decent quality
-
-Note: Processing will be significantly slower without a GPU. Consider using [Cloud Alternatives](#-cloud-alternatives).
-
-```bash
-ollama pull moondream
-```
-
-</details>
-
-<details>
-<summary><b>🖥️ Mid-Range (16GB RAM, 8GB+ VRAM)</b></summary>
-
-Best models:
-- `qwen2.5vl:7b` - **Recommended**
-- `minicpm-v` - Excellent for documents/OCR
-- `llava-llama3` - Good all-rounder
-
-```bash
-ollama pull qwen2.5vl:7b
-```
-
-</details>
-
-<details>
-<summary><b>🚀 High-End (32GB RAM, 12GB+ VRAM)</b></summary>
-
-Best models:
-- `qwen3-vl:8b` - **Recommended** - Latest and best quality
-- `llama3.2-vision:11b` - Meta's premium vision model
-- `qwen2.5vl:7b` - Fast with excellent quality
-
-Your setup (RTX 5070Ti 12GB, 32GB RAM) is perfect for:
-```bash
-ollama pull qwen3-vl:8b    # Best quality
-# or
-ollama pull qwen2.5vl:7b   # Faster processing
-```
-
-</details>
-
-### Model Features Comparison
-
-| Feature | qwen3-vl | qwen2.5vl | minicpm-v | llama3.2-vision |
-|---------|----------|-----------|-----------|-----------------|
-| Object Recognition | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
-| Scene Understanding | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
-| OCR (Text in Images) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ |
-| People/Faces | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ |
-| Document Analysis | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ |
-| Multilingual | 32 languages | 19 languages | EN/CN | 8 languages |
-
----
-
-## ☁️ Cloud Alternatives
-
-If you don't have a GPU or prefer cloud processing, you can use external APIs:
-
-### Option 1: OpenRouter API
+### Option 1: OpenRouter (Recommended Cloud Option)
 
 [OpenRouter](https://openrouter.ai/) provides access to multiple vision models via a single API.
 
-1. Create an account at [openrouter.ai](https://openrouter.ai/)
-2. Get your API key from the dashboard
-3. In the app settings, select "OpenRouter" as provider
-4. Enter your API key
-5. Choose from available models (GPT-4V, Claude 3, Gemini Pro Vision, etc.)
+**Free Vision Models on OpenRouter:**
+| Model | ID | Cost |
+|-------|-----|------|
+| Qwen2.5-VL 7B | `qwen/qwen2.5-vl-7b-instruct:free` | Free |
+| Llama 3.2 Vision | `meta-llama/llama-3.2-11b-vision-instruct:free` | Free |
 
-**Pricing**: Pay-per-use, varies by model (~$0.001-0.01 per image)
+**Paid Models (better quality):**
+| Model | ID | Cost/image |
+|-------|-----|------------|
+| GPT-4o | `openai/gpt-4o` | ~$0.005 |
+| Claude 3.5 Sonnet | `anthropic/claude-3.5-sonnet` | ~$0.005 |
+| Gemini 1.5 Flash | `google/gemini-flash-1.5` | ~$0.0001 |
+| Qwen2-VL 72B | `qwen/qwen2-vl-72b-instruct` | ~$0.001 |
 
-### Option 2: Google Gemini API
+**Setup:**
+1. Create account at [openrouter.ai](https://openrouter.ai/)
+2. Get API key from dashboard
+3. In app Settings: Select "OpenRouter", enter API key, choose model
 
-1. Get an API key from [Google AI Studio](https://aistudio.google.com/apikey)
-2. In the app settings, select "Gemini" as provider
-3. Enter your API key
+### Option 2: Google Gemini (Free Tier)
 
-**Pricing**: Free tier available (60 requests/minute)
-
-### Option 3: OpenAI API
-
-1. Get an API key from [OpenAI Platform](https://platform.openai.com/)
-2. In the app settings, select "OpenAI" as provider
-3. Enter your API key
-
-**Pricing**: ~$0.01-0.03 per image with GPT-4V
-
----
-
-## 🔧 Configuration
-
-### In-App Settings
-
-Click the ⚙️ settings icon in the app header to configure:
-
-- **Server URL**: Default `http://localhost:11434` (change if Ollama runs elsewhere)
-- **Model Name**: Your chosen vision model (e.g., `qwen3-vl:8b`)
-- **Provider**: Local (Ollama), OpenRouter, Gemini, or OpenAI
-
-### Environment Variables (Optional)
-
-Create a `.env.local` file for default configurations:
-
-```env
-# Optional: Pre-configure API keys for cloud providers
-VITE_OPENROUTER_API_KEY=your_openrouter_key
-VITE_GEMINI_API_KEY=your_gemini_key
-VITE_OPENAI_API_KEY=your_openai_key
-
-# Optional: Default Ollama URL (if not localhost)
-VITE_OLLAMA_URL=http://localhost:11434
-```
+1. Get free API key from [Google AI Studio](https://aistudio.google.com/apikey)
+2. In app Settings: Select "Gemini", enter API key
+3. Free tier: 1500 requests/day
 
 ---
 
-## 💾 Data Storage
+## Supported File Formats
 
-### Where is my data stored?
+The app only processes standard image formats (RAW files are automatically skipped):
 
-All indexed photo data (tags, metadata) is stored locally in your browser using **IndexedDB**. This means:
+**Supported:**
+- JPEG (.jpg, .jpeg)
+- PNG (.png)
+- WebP (.webp)
+- GIF (.gif)
+- BMP (.bmp)
 
-- ✅ Data persists across browser sessions
-- ✅ No external database required
-- ✅ Data stays on your machine
-- ⚠️ Clearing browser data will remove indexed tags
-
-### Export/Import (Coming Soon)
-
-Future versions will support:
-- Export tags to JSON/CSV
-- Import previously exported data
-- Sync with photo metadata (EXIF/XMP)
+**Automatically Excluded:**
+- RAW files: CR2, CR3, DNG, NEF, ARW, ORF, RW2, RAF, etc.
+- This allows you to import folders containing both RAW and JPEG without issues
 
 ---
 
-## 🐛 Troubleshooting
+## Data Storage & Recovery
 
-### "Ollama Disconnected (CORS?)"
+### How Data is Saved
 
-This is the most common issue. The browser is blocked from connecting to Ollama.
+Your photo index is stored locally in your browser using **IndexedDB**:
 
-**Solution:**
+- **Auto-save**: Each photo is saved immediately after indexing (crash-safe)
+- **Persistent**: Data survives browser restarts
+- **Private**: Never leaves your computer
+
+### Export Your Data (Backup)
+
+1. Click the database icon in the header
+2. Click "Export Backup (JSON)"
+3. Save the file somewhere safe
+
+### Import / Restore Data
+
+1. Click the database icon in the header
+2. Click "Import Backup"
+3. Select your previously exported JSON file
+4. Your tags will be restored
+
+### Data Location
+
+Data is stored in IndexedDB under:
+- **Database**: `PhotoIndexerDB`
+- **Stores**: `photos` (your indexed photos), `settings` (your preferences)
+
+To manually clear data:
+1. Open browser DevTools (F12)
+2. Go to Application > Storage > IndexedDB
+3. Delete `PhotoIndexerDB`
+
+Or use the "Clear All Data" button in the Data Management modal.
+
+---
+
+## Troubleshooting
+
+### "Ollama Disconnected" / CORS Error
+
 ```bash
-# Stop Ollama if running, then restart with CORS enabled:
+# Stop Ollama, then restart with CORS enabled:
 OLLAMA_ORIGINS="*" ollama serve
 ```
 
-For Windows, set the environment variable permanently (see [Windows installation](#-windows)).
-
-### "Connection Failed"
-
-1. **Is Ollama running?**
-   ```bash
-   # Check if Ollama is running
-   curl http://localhost:11434/api/tags
-   ```
-
-2. **Is the port correct?** Default is 11434. Check your Ollama configuration.
-
-3. **Firewall blocking?** Ensure port 11434 is open for local connections.
-
-### "Model not found"
-
-The model you selected isn't installed:
+For Docker:
 ```bash
-# List installed models
-ollama list
-
-# Pull the missing model
-ollama pull qwen2.5vl:7b
+docker run -e OLLAMA_ORIGINS="*" ...
 ```
 
-### Slow processing
+### Model Returns Empty/Wrong Tags
 
-- **CPU-only mode**: Vision models are slow on CPU. Consider using a smaller model (`moondream`) or cloud alternatives.
-- **Large images**: The app resizes images, but very large files may slow things down.
-- **Too many photos**: Process folders in smaller batches.
+- **qwen3-vl issue**: This model has a "thinking mode" that causes problems. Switch to `minicpm-v`
+- In Settings, change model to `minicpm-v` and re-index
 
-### Images not loading
+### Slow Processing
 
-- Supported formats: JPEG, PNG, GIF, WebP, BMP
-- Check file permissions
-- Try refreshing the page
+- Vision models need GPU for good performance
+- Without GPU: Use cloud API (OpenRouter/Gemini) or `moondream` model
+- Large photo collections: Process in batches of 100-500
 
----
+### RAW Files Not Showing
 
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+This is intentional! RAW files (CR2, CR3, DNG, etc.) are automatically filtered out. Export your RAWs to JPEG first, or the app will use the JPEG versions if you shoot RAW+JPEG.
 
 ---
 
-## 📄 License
+## Contributing
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Contributions welcome! Please submit a Pull Request.
 
 ---
 
-## 🙏 Acknowledgments
+## License
+
+MIT License - see [LICENSE](LICENSE) file.
+
+---
+
+## Acknowledgments
 
 - [Ollama](https://ollama.com/) - Local LLM runtime
+- [OpenBMB](https://github.com/OpenBMB) - MiniCPM-V (recommended model)
 - [Qwen Team](https://github.com/QwenLM) - Qwen vision models
-- [Meta AI](https://ai.meta.com/) - Llama models
-- [OpenBMB](https://github.com/OpenBMB) - MiniCPM-V
+- [OpenRouter](https://openrouter.ai/) - Multi-model API gateway
 
 ---
 
 <div align="center">
 
-**Made with ❤️ for privacy-conscious photographers**
+**Made with care for privacy-conscious photographers**
 
-[Report Bug](https://github.com/OnoSendai13/LocalSmartPhotoIndexer/issues) • [Request Feature](https://github.com/OnoSendai13/LocalSmartPhotoIndexer/issues)
+[Report Bug](https://github.com/OnoSendai13/LocalSmartPhotoIndexer/issues) | [Request Feature](https://github.com/OnoSendai13/LocalSmartPhotoIndexer/issues)
 
 </div>
