@@ -374,22 +374,29 @@ No explanation, just the JSON array.`;
         }
       }
       // Case 2: Response is an object with categories {"People": ["Portrait"], "Scene": ["Beach"]}
+      // Also handles {"People": "Couple", "Scene": "Landscape"} (string values)
       else if (typeof parsed === 'object' && parsed !== null) {
         console.log(`🔍 Response is a JSON object with categories`);
         // Extract all values from all categories
         for (const [category, tags] of Object.entries(parsed)) {
           if (Array.isArray(tags)) {
             for (const tag of tags) {
-              const validTag = findClosestTag(String(tag).trim());
+              const tagStr = String(tag).trim();
+              const validTag = findClosestTag(tagStr);
               if (validTag && !validTags.includes(validTag)) {
                 validTags.push(validTag);
+              } else if (!validTag) {
+                console.log(`⚠️ Tag "${tagStr}" from category "${category}" not found in allowed list`);
               }
             }
           } else if (typeof tags === 'string') {
-            // Sometimes a category has a single string value
-            const validTag = findClosestTag(tags.trim());
+            // Sometimes a category has a single string value (e.g., "People": "Couple")
+            const tagStr = tags.trim();
+            const validTag = findClosestTag(tagStr);
             if (validTag && !validTags.includes(validTag)) {
               validTags.push(validTag);
+            } else if (!validTag) {
+              console.log(`⚠️ Tag "${tagStr}" from category "${category}" not found in allowed list`);
             }
           }
         }
