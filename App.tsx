@@ -387,12 +387,13 @@ const App: React.FC = () => {
       }
 
       const id = Math.random().toString(36).substring(7);
-      const previewUrl = URL.createObjectURL(file);
+      // DON'T create blob URLs here - it causes memory issues with large folders!
+      // Preview URLs will be created lazily when needed for display
 
       newPhotos.push({
         id,
         file,
-        previewUrl,
+        previewUrl: '', // Empty - will be created on-demand
         name: file.name,
         path: relativePath,
         folderPath: folderPath,

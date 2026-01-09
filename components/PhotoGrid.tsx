@@ -1,10 +1,86 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Photo } from '../types';
 
 interface PhotoGridProps {
   photos: Photo[];
   onPhotoClick: (photo: Photo) => void;
 }
+
+// Lazy loading image component - only creates blob URL when visible
+const LazyImage: React.FC<{ photo: Photo; className?: string }> = ({ photo, className }) => {
+  const [imageUrl, setImageUrl] = useState<string>('');
+  const [isLoaded, setIsLoaded] = useState(false);
+  const imgRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // If previewUrl already exists, use it
+    if (photo.previewUrl) {
+      setImageUrl(photo.previewUrl);
+      return;
+    }
+
+    // If no file, show placeholder
+    if (!photo.file || photo.file.size === 0) {
+      return;
+    }
+
+    // Use IntersectionObserver for lazy loading
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting && !imageUrl) {
+            // Create blob URL only when visible
+            const url = URL.createObjectURL(photo.file);
+            setImageUrl(url);
+            observer.disconnect();
+          }
+        });
+      },
+      { rootMargin: '200px' } // Start loading 200px before visible
+    );
+
+    if (imgRef.current) {
+      observer.observe(imgRef.current);
+    }
+
+    return () => {
+      observer.disconnect();
+      // Revoke blob URL when component unmounts
+      if (imageUrl && !photo.previewUrl) {
+        URL.revokeObjectURL(imageUrl);
+      }
+    };
+  }, [photo.file, photo.previewUrl]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (imageUrl && !photo.previewUrl) {
+        URL.revokeObjectURL(imageUrl);
+      }
+    };
+  }, [imageUrl, photo.previewUrl]);
+
+  return (
+    <div ref={imgRef} className="w-full h-full">
+      {imageUrl ? (
+        <img
+          src={imageUrl}
+          alt={photo.name}
+          className={`${className} ${!isLoaded ? 'opacity-0' : 'opacity-100'} transition-opacity duration-300`}
+          onLoad={() => setIsLoaded(true)}
+          loading="lazy"
+        />
+      ) : (
+        <div className="w-full h-full bg-zinc-800 flex items-center justify-center">
+          <svg className="w-8 h-8 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+          </svg>
+        </div>
+      )}
+    </div>
+  );
+};
 
 export const PhotoGrid: React.FC<PhotoGridProps> = ({ photos, onPhotoClick }) => {
   if (photos.length === 0) {
@@ -28,9 +104,8 @@ export const PhotoGrid: React.FC<PhotoGridProps> = ({ photos, onPhotoClick }) =>
             onClick={() => onPhotoClick(photo)}
             className="group relative aspect-square bg-zinc-900 rounded-xl overflow-hidden cursor-pointer border border-zinc-800 hover:border-indigo-500/50 transition-all shadow-sm hover:shadow-indigo-500/10"
           >
-            <img 
-              src={photo.previewUrl} 
-              alt={photo.name} 
+            <LazyImage 
+              photo={photo}
               className={`w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 ${photo.status === 'processing' ? 'opacity-50 blur-sm' : ''}`}
             />
             
@@ -56,6 +131,12 @@ export const PhotoGrid: React.FC<PhotoGridProps> = ({ photos, onPhotoClick }) =>
             {/* Status Indicator (top right) */}
             {photo.status === 'done' && (
               <div className="absolute top-2 right-2 w-2 h-2 rounded-full bg-emerald-500 shadow-lg shadow-emerald-500/50"></div>
+            )}
+            {photo.status === 'error' && (
+              <div className="absolute top-2 right-2 w-2 h-2 rounded-full bg-red-500 shadow-lg shadow-red-500/50"></div>
+            )}
+            {photo.status === 'pending' && (
+              <div className="absolute top-2 right-2 w-2 h-2 rounded-full bg-zinc-500"></div>
             )}
           </div>
         ))}

@@ -57,14 +57,40 @@ export const RECOMMENDED_MODELS = [
  */
 export const fileToBase64 = async (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
+    // Validate file before reading
+    if (!file || file.size === 0) {
+      reject(new Error(`Invalid file: ${file?.name || 'unknown'} (size: ${file?.size || 0})`));
+      return;
+    }
+    
     const reader = new FileReader();
     reader.onloadend = () => {
       const base64String = reader.result as string;
+      
+      // Check if result is valid
+      if (!base64String) {
+        reject(new Error(`Failed to read file: ${file.name} - result is null`));
+        return;
+      }
+      
       // Remove the data URL prefix (e.g., "data:image/jpeg;base64,")
-      const base64Data = base64String.split(',')[1];
+      const parts = base64String.split(',');
+      if (parts.length < 2) {
+        reject(new Error(`Invalid data URL format for file: ${file.name}`));
+        return;
+      }
+      
+      const base64Data = parts[1];
+      if (!base64Data) {
+        reject(new Error(`Empty base64 data for file: ${file.name}`));
+        return;
+      }
+      
       resolve(base64Data);
     };
-    reader.onerror = reject;
+    reader.onerror = (error) => {
+      reject(new Error(`FileReader error for ${file.name}: ${error}`));
+    };
     reader.readAsDataURL(file);
   });
 };
