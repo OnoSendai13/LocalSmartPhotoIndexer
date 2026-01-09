@@ -224,7 +224,7 @@ The app only processes standard image formats (RAW files are automatically skipp
 - This allows you to import folders containing mixed formats without issues
 
 **Automatic Optimization:**
-- Large JPG/PNG files are automatically resized to 1024px max before analysis
+- Large JPG/PNG files are automatically resized into temp 1024px files max before analysis
 - This prevents memory issues while preserving image quality for classification
 - Example: A 50MB, 8000x6000 photo becomes ~200KB, 1024x768 for analysis
 
@@ -312,7 +312,7 @@ docker run -e OLLAMA_ORIGINS="*" ...
 
 ### RAW Files Not Showing
 
-This is intentional! RAW files (CR2, CR3, DNG, etc.) are automatically filtered out. Export your RAWs to JPEG first, or the app will use the JPEG versions if you shoot RAW+JPEG.
+This is intentional! RAW files (CR2, CR3, DNG, etc.) and TIFF/PSD are automatically filtered out. Export your RAWs to JPEG first, or the app will use the JPEG versions if you shoot RAW+JPEG.
 
 ---
 
