@@ -171,27 +171,21 @@ export const analyzeImageWithOllama = async (
   const { url, model } = config;
   const endpoint = `${url.replace(/\/$/, '')}/api/generate`;
 
-  // Get the allowed tags list for the prompt
-  const tagList = getTagListForPrompt();
-  
-  // Strict prompt with closed vocabulary
-  // /no_think disables Qwen3's thinking mode which causes empty responses
+  // Simple and direct prompt - complex prompts confuse smaller models
+  // /no_think disables Qwen3's thinking mode
   const prompt = `/no_think
-Analyze this image and classify it using ONLY tags from this predefined list.
+What do you see in this image? Answer with a JSON array of tags.
 
-ALLOWED TAGS (choose 3-8 that apply):
-${tagList}
+Choose from these categories:
+- People: Portrait, Group, Family, Couple, Selfie
+- Scene: Landscape, Cityscape, Beach, Mountain, Forest, Garden, Street
+- Location: Indoor, Outdoor, Home, Restaurant, Museum, Church
+- Weather: Sunny, Cloudy, Sunset, Sunrise, Night
+- Activity: Walking, Posing, Eating, Traveling, Sports
+- Objects: Car, Food, Flower, Architecture, Art, Statue
 
-RULES:
-1. ONLY use tags from the list above - no other words allowed
-2. Choose 3-8 tags that ACTUALLY appear in the image
-3. Return ONLY a JSON array of strings
-4. Use exact tag names with correct capitalization (e.g., "Female-Model" not "female model")
-5. Do NOT guess or hallucinate - only tag what you clearly see
-
-Example output: ["Portrait", "Female-Model", "Indoor", "Studio", "Fashion"]
-
-Return ONLY the JSON array, nothing else.`;
+Return ONLY a JSON array like: ["Family", "Outdoor", "Sunny", "Garden"]
+No explanation, just the JSON array.`;
 
   console.log(`🖼️ Analyzing image with model: ${model}`);
   console.log(`📡 Sending to: ${endpoint}`);

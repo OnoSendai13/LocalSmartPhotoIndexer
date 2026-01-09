@@ -101,21 +101,19 @@ export const DEFAULT_SETTINGS: AppSettings = {
 };
 
 // ============================================================
-// ALLOWED TAGS - Closed vocabulary for photo classification
-// The AI model MUST choose from these tags only
+// ALLOWED TAGS - Simplified vocabulary for better model accuracy
+// Keep it simple - complex lists confuse local models
 // ============================================================
 
 export const ALLOWED_TAGS = {
-  // Subject Type - What is the main subject?
-  subject: [
-    "Portrait",           // Close-up of a person's face
-    "Male-Model",         // Man as main subject (fashion, artistic)
-    "Female-Model",       // Woman as main subject (fashion, artistic)
-    "Group",              // Multiple people
-    "Selfie",             // Self-portrait
-    "Child",              // Children
-    "Couple",             // Two people together romantically
-    "Family",             // Family gathering
+  // People
+  people: [
+    "Portrait",
+    "Group", 
+    "Family",
+    "Couple",
+    "Selfie",
+    "People",
   ],
   
   // Animals
@@ -124,137 +122,68 @@ export const ALLOWED_TAGS = {
     "Cat", 
     "Bird",
     "Horse",
-    "Fish",
-    "Marine-Animal",      // Dolphins, whales, seals, etc.
-    "Insect",
-    "Wild-Animal",        // Lions, elephants, etc.
-    "Farm-Animal",        // Cows, chickens, pigs, etc.
-    "Reptile",            // Snakes, lizards, turtles
+    "Animal",
   ],
   
-  // Location / Environment
-  location: [
+  // Scene / Environment
+  scene: [
+    "Landscape",
+    "Cityscape",
     "Beach",
     "Mountain",
     "Forest",
-    "Desert",
-    "Lake",
-    "River",
-    "Ocean",
-    "City",
-    "Street",
-    "Park",
     "Garden",
+    "Park",
+    "Street",
+    "Village",
+    "Countryside",
+  ],
+  
+  // Location Type
+  location: [
     "Indoor",
-    "Studio",
+    "Outdoor",
     "Home",
-    "Office",
     "Restaurant",
     "Museum",
     "Church",
-    "Airport",
-    "Train-Station",
+    "Castle",
+    "Building",
   ],
   
-  // Landscape Types
-  landscape: [
-    "Landscape",          // General landscape
-    "Cityscape",          // Urban skyline
-    "Seascape",           // Ocean/sea view
-    "Countryside",        // Rural areas
-    "Aerial-View",        // Drone/plane shots
-    "Panorama",           // Wide panoramic view
-  ],
-  
-  // Time of Day / Lighting
-  lighting: [
-    "Sunrise",
-    "Sunset",
-    "Golden-Hour",
-    "Blue-Hour",
-    "Daytime",
-    "Night",
-    "Cloudy",
+  // Weather / Time
+  weather: [
     "Sunny",
-    "Foggy",
+    "Cloudy",
+    "Sunset",
+    "Sunrise",
+    "Night",
     "Rainy",
     "Snowy",
-    "Stormy",
-  ],
-  
-  // Vehicles / Transportation
-  vehicles: [
-    "Car",
-    "Motorcycle",
-    "Bicycle",
-    "Boat",
-    "Airplane",
-    "Train",
-    "Bus",
-    "Truck",
   ],
   
   // Activities
   activities: [
+    "Walking",
+    "Posing",
+    "Eating",
+    "Traveling",
     "Sports",
     "Swimming",
     "Hiking",
-    "Running",
-    "Cycling",
-    "Skiing",
-    "Surfing",
-    "Dancing",
-    "Cooking",
-    "Eating",
-    "Shopping",
-    "Working",
-    "Reading",
-    "Sleeping",
-    "Posing",
-    "Walking",
-    "Traveling",
-  ],
-  
-  // Events
-  events: [
-    "Wedding",
-    "Birthday",
-    "Party",
-    "Concert",
-    "Festival",
-    "Graduation",
-    "Christmas",
-    "Halloween",
-    "New-Year",
     "Vacation",
   ],
   
-  // Objects / Themes
+  // Objects
   objects: [
+    "Car",
     "Food",
     "Flower",
     "Architecture",
     "Art",
     "Statue",
-    "Monument",
-    "Technology",
-    "Fashion",
-    "Jewelry",
-    "Book",
-    "Document",
-  ],
-  
-  // Photo Style / Type
-  style: [
-    "Black-White",
-    "Vintage",
-    "Artistic",
-    "Documentary",
-    "Macro",
-    "Close-Up",
-    "Long-Exposure",
-    "HDR",
-    "Minimalist",
+    "Tree",
+    "Water",
   ],
 } as const;
 
@@ -301,16 +230,13 @@ export const getTagListForPrompt = (): string => {
 // TAG_CATEGORIES - For UI display/suggestions (grouped view)
 // ============================================================
 export const TAG_CATEGORIES: Record<string, string[]> = {
-  "People": ALLOWED_TAGS.subject as unknown as string[],
+  "People": ALLOWED_TAGS.people as unknown as string[],
   "Animals": ALLOWED_TAGS.animals as unknown as string[],
+  "Scene": ALLOWED_TAGS.scene as unknown as string[],
   "Location": ALLOWED_TAGS.location as unknown as string[],
-  "Landscape": ALLOWED_TAGS.landscape as unknown as string[],
-  "Lighting": ALLOWED_TAGS.lighting as unknown as string[],
-  "Vehicles": ALLOWED_TAGS.vehicles as unknown as string[],
+  "Weather": ALLOWED_TAGS.weather as unknown as string[],
   "Activities": ALLOWED_TAGS.activities as unknown as string[],
-  "Events": ALLOWED_TAGS.events as unknown as string[],
   "Objects": ALLOWED_TAGS.objects as unknown as string[],
-  "Style": ALLOWED_TAGS.style as unknown as string[],
 };
 
 // Model info for display
