@@ -43,6 +43,7 @@ const App: React.FC = () => {
   const [currentProcessingPhoto, setCurrentProcessingPhoto] = useState<string>('');
   const processingQueue = useRef<string[]>([]);
   const [tagInput, setTagInput] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
   
   // Data management
   const [showDataModal, setShowDataModal] = useState(false);
@@ -338,11 +339,16 @@ const App: React.FC = () => {
     
     if (newPhotos.length === 0) {
       alert('No image files found in the selected folder.');
+      // Reset the input so user can select again
+      if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
 
     setPhotos(prev => [...prev, ...newPhotos]);
     processingQueue.current.push(...newQueueIds);
+
+    // Reset the input so user can select the same folder again if needed
+    if (fileInputRef.current) fileInputRef.current.value = '';
 
     if (!isProcessing) {
       setIsProcessing(true);
@@ -502,17 +508,22 @@ const App: React.FC = () => {
             </button>
             
             {/* Add Folder Button */}
-            <label className="relative inline-flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white text-sm font-medium rounded-lg cursor-pointer transition-colors shadow-lg shadow-orange-500/20">
+            <button 
+              onClick={() => fileInputRef.current?.click()}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white text-sm font-medium rounded-lg cursor-pointer transition-colors shadow-lg shadow-orange-500/20"
+            >
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
               <span>Add Folder</span>
-              <input 
-                type="file" 
-                {...({ webkitdirectory: "", directory: "" } as any)}
-                multiple 
-                className="hidden" 
-                onChange={handleFolderSelect} 
-              />
-            </label>
+            </button>
+            <input 
+              ref={fileInputRef}
+              type="file" 
+              webkitdirectory=""
+              directory=""
+              multiple 
+              className="hidden" 
+              onChange={handleFolderSelect} 
+            />
           </div>
         </div>
 
