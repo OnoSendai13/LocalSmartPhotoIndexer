@@ -3,7 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Local Photo Organizer (Ollama)</title>
+    <meta name="description" content="AI-powered photo organization that runs 100% on your machine. Index and tag photos using local Ollama vision models.">
+    <meta name="theme-color" content="#09090b">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📸</text></svg>">
+    <title>Local Smart Photo Indexer</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
       ::-webkit-scrollbar {
@@ -20,19 +23,18 @@
       ::-webkit-scrollbar-thumb:hover {
         background: #52525b; 
       }
+      /* Loading animation */
+      @keyframes pulse-border {
+        0%, 100% { border-color: #27272a; }
+        50% { border-color: #ea580c; }
+      }
+      .animate-pulse-border {
+        animation: pulse-border 2s ease-in-out infinite;
+      }
     </style>
-  <script type="importmap">
-{
-  "imports": {
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "react": "https://esm.sh/react@^19.2.3",
-    "@google/genai": "https://esm.sh/@google/genai@^1.35.0"
-  }
-}
-</script>
-</head>
+  </head>
   <body class="bg-zinc-950 text-zinc-100 h-screen overflow-hidden selection:bg-orange-500 selection:text-white">
     <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
   </body>
 </html>

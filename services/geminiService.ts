@@ -1,9 +1,38 @@
-import { GoogleGenAI, Type } from "@google/genai";
+/**
+ * Google Gemini API Service for cloud-based image analysis
+ * https://ai.google.dev/
+ */
 
-// We use the environment variable for the API Key.
-const apiKey = process.env.API_KEY || '';
+export interface GeminiConfig {
+  apiKey: string;
+  model?: string;
+}
 
-const ai = new GoogleGenAI({ apiKey });
+const DEFAULT_MODEL = 'gemini-1.5-flash';
+
+// Available Gemini vision models
+export const GEMINI_MODELS = [
+  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash (Fast)', price: 'Free tier' },
+  { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro (Better)', price: 'Paid' },
+  { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash (Latest)', price: 'Free tier' },
+];
+
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+
+/**
+ * Check if the Gemini API key is valid
+ */
+export const checkGeminiConnection = async (apiKey: string): Promise<boolean> => {
+  try {
+    const response = await fetch(
+      `${GEMINI_API_URL}?key=${apiKey}`
+    );
+    return response.ok;
+  } catch (e) {
+    console.error('Gemini connection check failed:', e);
+    return false;
+  }
+};
 
 /**
  * Converts a File object to a Base64 string.
@@ -23,58 +52,101 @@ export const fileToGenerativePart = async (file: File): Promise<string> => {
 };
 
 /**
- * Analyzes an image using Gemini to generate categorization tags.
+ * Analyzes an image using Gemini API to generate categorization tags.
  */
-export const analyzeImage = async (base64Data: string, mimeType: string): Promise<string[]> => {
+export const analyzeImageWithGemini = async (
+  base64Data: string, 
+  mimeType: string,
+  config: GeminiConfig
+): Promise<string[]> => {
+  const { apiKey, model = DEFAULT_MODEL } = config;
+
   if (!apiKey) {
-    console.error("API Key is missing.");
-    return ["Uncategorized"];
+    console.error("Gemini API Key is missing.");
+    throw new Error("Gemini API Key is required");
   }
 
+  const prompt = `Analyze this image and provide a JSON array of 5 to 10 single-word keywords.
+
+Focus on these categories:
+1. Main Content (e.g., Nature, Urban, People, Document)
+2. Specific Subject (e.g., Cat, Dog, Car, Flower, Building)
+3. Time of Day/Lighting (e.g., Morning, Night, Sunset, Sunny, Cloudy)
+4. Location (e.g., Indoor, Outdoor, Forest, Street, Beach)
+5. Activity (e.g., Sports, Sleeping, Running, Eating)
+
+IMPORTANT: Return ONLY the JSON array. Example: ["Nature", "Dog", "Outdoor", "Sunny", "Running"]. Do not add markdown or explanations.`;
+
   try {
-    const model = 'gemini-3-flash-preview'; 
-    
-    // We use a schema to ensure we get a clean array of strings back.
-    const response = await ai.models.generateContent({
-      model: model,
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              mimeType: mimeType,
-              data: base64Data
-            }
-          },
-          {
-            text: "Analyze this image and provide 5 to 8 relevant single-word semantic categories or tags to organize this photo (e.g., 'Nature', 'Urban', 'People', 'Food', 'Documents', 'Animals', 'Screenshot', 'Night', 'Travel'). Return ONLY the list of tags."
+    const response = await fetch(
+      `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              {
+                inline_data: {
+                  mime_type: mimeType,
+                  data: base64Data
+                }
+              },
+              {
+                text: prompt
+              }
+            ]
+          }],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 500,
+            responseMimeType: "application/json",
           }
-        ]
-      },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.STRING
-          }
-        }
+        }),
       }
-    });
+    );
 
-    const jsonText = response.text;
-    if (!jsonText) return ["Uncategorized"];
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error?.message || `Gemini API Error: ${response.statusText}`);
+    }
 
-    const tags = JSON.parse(jsonText);
+    const data = await response.json();
+    let responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+    // Clean up response
+    responseText = responseText.trim();
     
-    // Fallback if the model returns something unexpected (though schema usually prevents this)
-    if (Array.isArray(tags)) {
-      return tags.map((t: string) => t.charAt(0).toUpperCase() + t.slice(1)); // Capitalize
+    // Attempt to extract JSON array if wrapped in markdown
+    const jsonMatch = responseText.match(/\[.*\]/s);
+    if (jsonMatch) {
+      responseText = jsonMatch[0];
+    }
+
+    try {
+      const tags = JSON.parse(responseText);
+      if (Array.isArray(tags)) {
+        return tags
+          .map((t: any) => String(t).trim())
+          .filter((t: string) => t.length > 2)
+          .map((t: string) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase());
+      }
+    } catch (e) {
+      console.warn("Could not parse JSON from Gemini:", responseText);
+      // Fallback: extract words
+      const words = responseText
+        .split(/[,\n]/)
+        .map((s: string) => s.trim())
+        .filter((s: string) => s.length > 2 && !s.includes('[') && !s.includes(']'));
+      return words.slice(0, 10);
     }
     
     return ["Uncategorized"];
 
   } catch (error) {
-    console.error("Error analyzing image:", error);
-    return ["Error"];
+    console.error("Error analyzing image with Gemini:", error);
+    throw error;
   }
 };
