@@ -247,6 +247,11 @@ const App: React.FC = () => {
   };
 
   const handleFolderSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    console.log('🔥 handleFolderSelect CALLED');
+    console.log('🔥 event:', event);
+    console.log('🔥 event.target:', event.target);
+    console.log('🔥 event.target.files:', event.target.files);
+    
     const files = event.target.files;
     console.log('📁 Folder selected, files:', files?.length);
     
@@ -509,7 +514,10 @@ const App: React.FC = () => {
             
             {/* Add Folder Button */}
             <button 
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => {
+                console.log('🖱️ Button clicked, fileInputRef:', fileInputRef.current);
+                fileInputRef.current?.click();
+              }}
               className="inline-flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white text-sm font-medium rounded-lg cursor-pointer transition-colors shadow-lg shadow-orange-500/20"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
@@ -521,8 +529,11 @@ const App: React.FC = () => {
               webkitdirectory=""
               directory=""
               multiple 
-              className="hidden" 
-              onChange={handleFolderSelect} 
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                console.log('📂 Input onChange triggered!');
+                handleFolderSelect(e);
+              }} 
             />
           </div>
         </div>
