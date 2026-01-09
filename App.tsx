@@ -186,28 +186,47 @@ const App: React.FC = () => {
     }
   };
 
-  // Queue Processing Logic
-  const processQueue = async () => {
+  // Queue Processing Logic - uses ref to always get latest photos
+  const photosRef = useRef<Photo[]>([]);
+  
+  // Keep photosRef in sync with photos state
+  useEffect(() => {
+    photosRef.current = photos;
+  }, [photos]);
+
+  const processQueueWithPhotos = async (initialPhotos?: Photo[]) => {
+    // Use provided photos or get from ref
+    if (initialPhotos) {
+      photosRef.current = initialPhotos;
+    }
+    
     if (processingQueue.current.length === 0) {
       setIsProcessing(false);
+      setCurrentProcessingPhoto('');
+      console.log('✅ Processing complete!');
       return;
     }
 
     const photoId = processingQueue.current.shift();
     if (!photoId) return;
 
-    const photo = photos.find(p => p.id === photoId);
+    // Get photo from ref (always current)
+    const photo = photosRef.current.find(p => p.id === photoId);
     if (!photo) {
-      processQueue(); 
+      console.log(`⚠️ Photo ${photoId} not found, skipping...`);
+      processQueueWithPhotos(); 
       return;
     }
 
+    console.log(`🔍 Processing: ${photo.name}`);
     setPhotos(prev => prev.map(p => p.id === photoId ? { ...p, status: 'processing' } : p));
     setCurrentProcessingPhoto(photo.name);
 
     try {
+      console.log(`📤 Sending to Ollama: ${photo.name}`);
       const base64Data = await fileToBase64(photo.file);
       const tags = await analyzeImage(base64Data, photo.file.type);
+      console.log(`✅ Tags received for ${photo.name}:`, tags);
       
       const updatedPhoto = { 
         ...photo, 
@@ -234,7 +253,7 @@ const App: React.FC = () => {
       await savePhoto(storedPhoto);
       
     } catch (error) {
-      console.error(`Failed to process ${photo.name}`, error);
+      console.error(`❌ Failed to process ${photo.name}`, error);
       setPhotos(prev => prev.map(p => p.id === photoId ? { 
         ...p, 
         status: 'error',
@@ -242,7 +261,7 @@ const App: React.FC = () => {
       } : p));
     } finally {
       // Process next item
-      processQueue(); 
+      processQueueWithPhotos(); 
     }
   };
 
@@ -349,16 +368,24 @@ const App: React.FC = () => {
       return;
     }
 
-    setPhotos(prev => [...prev, ...newPhotos]);
-    processingQueue.current.push(...newQueueIds);
+    // Add photos and start processing
+    setPhotos(prev => {
+      const updatedPhotos = [...prev, ...newPhotos];
+      
+      // Start processing after state is updated
+      processingQueue.current.push(...newQueueIds);
+      
+      if (!isProcessing) {
+        setIsProcessing(true);
+        // Use setTimeout to ensure state is updated before processing
+        setTimeout(() => processQueueWithPhotos(updatedPhotos), 0);
+      }
+      
+      return updatedPhotos;
+    });
 
     // Reset the input so user can select the same folder again if needed
     if (fileInputRef.current) fileInputRef.current.value = '';
-
-    if (!isProcessing) {
-      setIsProcessing(true);
-      processQueue();
-    }
   };
 
   // Tag Management
