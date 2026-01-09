@@ -73,7 +73,7 @@ ollama pull minicpm-v
 - ~8GB VRAM required
 - Specifically optimized for visual understanding
 
-### Model Comparison (January 2025)
+### Model Comparison (January 2026)
 
 | Model | VRAM | Speed | Accuracy | Recommendation |
 |-------|------|-------|----------|----------------|
@@ -92,7 +92,7 @@ ollama pull minicpm-v
 |------------|-------------------|---------|
 | No GPU / 8GB RAM | Use Cloud API (see below) | - |
 | 8GB+ VRAM | minicpm-v | `ollama pull minicpm-v` |
-| 12GB+ VRAM | minicpm-v or qwen2.5vl:7b | `ollama pull minicpm-v` |
+| 12GB+ VRAM | minicpm-v or qwen2.5vl:7b | `ollama pull minicpm-v / qwen2.5vl:7b` |
 
 ---
 
