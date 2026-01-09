@@ -247,7 +247,17 @@ const App: React.FC = () => {
 
   const handleFolderSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
-    if (!files || files.length === 0) return;
+    console.log('📁 Folder selected, files:', files?.length);
+    
+    if (!files || files.length === 0) {
+      console.log('❌ No files found');
+      return;
+    }
+
+    // Debug: Log first few files
+    Array.from(files).slice(0, 5).forEach((f, i) => {
+      console.log(`  File ${i}: ${f.name}, type: ${f.type}, path: ${f.webkitRelativePath}`);
+    });
 
     // Start scanning
     setIsScanning(true);
@@ -286,8 +296,19 @@ const App: React.FC = () => {
         currentFile: file.name 
       });
       
-      // Skip non-images
-      if (!file.type.startsWith('image/')) continue;
+      // Skip non-images - but also check file extension as fallback
+      const isImageByType = file.type.startsWith('image/');
+      const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.heic', '.heif'];
+      const isImageByExt = imageExtensions.some(ext => file.name.toLowerCase().endsWith(ext));
+      
+      if (!isImageByType && !isImageByExt) {
+        continue;
+      }
+      
+      // Log if type was missing but extension matched
+      if (!isImageByType && isImageByExt) {
+        console.log(`⚠️ File ${file.name} has no MIME type but matches extension`);
+      }
 
       const id = Math.random().toString(36).substring(7);
       const previewUrl = URL.createObjectURL(file);
@@ -312,6 +333,8 @@ const App: React.FC = () => {
     }
 
     setIsScanning(false);
+    
+    console.log(`✅ Scan complete: ${newPhotos.length} images found out of ${filesArray.length} files`);
     
     if (newPhotos.length === 0) {
       alert('No image files found in the selected folder.');
