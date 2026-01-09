@@ -183,19 +183,26 @@ IMPORTANT: Return ONLY the JSON array. Example: ["Nature", "Dog", "Outdoor", "Su
 
   console.log(`🖼️ Analyzing image with model: ${model}`);
   console.log(`📡 Sending to: ${endpoint}`);
+  console.log(`📏 Base64 image size: ${(base64Data.length / 1024).toFixed(1)} KB`);
 
   try {
-    const requestBody = {
+    // Note: Some models like qwen3-vl don't support format: "json" well
+    // We'll use a clearer prompt and parse the response more robustly
+    const requestBody: Record<string, any> = {
       model: model,
       prompt: prompt,
       images: [base64Data],
       stream: false,
-      format: "json",
       options: {
         temperature: 0.3,      // Lower temperature for more consistent output
         num_predict: 500,      // Limit response length
       }
     };
+    
+    // Only add format:json for models that support it well (not qwen3-vl)
+    if (!model.includes('qwen3-vl')) {
+      requestBody.format = "json";
+    }
     
     console.log(`📤 Request body (without base64):`, { ...requestBody, images: ['<base64 data>'] });
     
@@ -216,41 +223,60 @@ IMPORTANT: Return ONLY the JSON array. Example: ["Nature", "Dog", "Outdoor", "Su
     }
 
     const data = await response.json();
-    let responseText = data.response;
+    console.log(`📦 Full Ollama response:`, data);
+    
+    let responseText = data.response || '';
+    console.log(`📝 Response text (raw):`, JSON.stringify(responseText));
+
+    // Check if response is empty
+    if (!responseText || responseText.trim() === '') {
+      console.error('❌ Ollama returned empty response!');
+      console.log('💡 This might be a model compatibility issue. Try a different model.');
+      return ["Error-EmptyResponse"];
+    }
 
     // Clean up response if the model didn't respect JSON strictly
     responseText = responseText.trim();
     
     // Attempt to extract JSON array if wrapped in markdown or other text
-    const jsonMatch = responseText.match(/\[.*\]/s);
+    const jsonMatch = responseText.match(/\[[\s\S]*?\]/);
     if (jsonMatch) {
       responseText = jsonMatch[0];
+      console.log(`🔍 Extracted JSON array:`, responseText);
     }
 
     try {
       const tags = JSON.parse(responseText);
       if (Array.isArray(tags)) {
         // Filter out short tags, clean and capitalize
-        return tags
+        const cleanedTags = tags
           .map((t: any) => String(t).trim())
           .filter((t: string) => t.length > 2 && t.length < 30)
           .map((t: string) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase())
           .slice(0, 10); // Limit to 10 tags
+        
+        console.log(`✅ Parsed tags:`, cleanedTags);
+        return cleanedTags.length > 0 ? cleanedTags : ["Uncategorized"];
       }
     } catch (e) {
-      console.warn("Could not parse JSON from Ollama, trying regex fallback:", responseText);
+      console.warn("⚠️ Could not parse JSON from Ollama, trying regex fallback");
+      console.log("Raw response:", responseText);
       
       // Fallback: extract words if JSON parsing fails
+      // Look for comma-separated or newline-separated words
       const words = responseText
-        .replace(/[\[\]"']/g, '')
+        .replace(/[\[\]"'`{}]/g, '')  // Remove brackets and quotes
+        .replace(/```[\s\S]*?```/g, '') // Remove code blocks
         .split(/[,\n]/)
         .map((s: string) => s.trim())
-        .filter((s: string) => s.length > 2 && s.length < 30);
+        .filter((s: string) => s.length > 2 && s.length < 30 && /^[a-zA-Z]+$/.test(s));
       
       if (words.length > 0) {
-        return words
+        const cleanedWords = words
           .map((t: string) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase())
           .slice(0, 10);
+        console.log(`✅ Fallback extracted words:`, cleanedWords);
+        return cleanedWords;
       }
     }
 
