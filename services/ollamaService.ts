@@ -89,20 +89,42 @@ export const fileToBase64 = async (file: File): Promise<string> => {
  * Checks if Ollama is reachable and returns available models
  */
 export const checkOllamaConnection = async (url: string): Promise<boolean> => {
+  const endpoint = `${url.replace(/\/$/, '')}/api/tags`;
+  console.log(`🔗 Checking Ollama connection: ${endpoint}`);
+  
   try {
-    const response = await fetch(`${url.replace(/\/$/, '')}/api/tags`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      signal: controller.signal,
+    });
+    
+    clearTimeout(timeoutId);
+    
     if (!response.ok) {
-      console.warn(`Ollama responded but with status: ${response.status}`);
+      console.warn(`❌ Ollama responded but with status: ${response.status}`);
       return false;
     }
+    
+    const data = await response.json();
+    console.log(`✅ Ollama connected! Models available:`, data.models?.length || 0);
     return true;
-  } catch (e) {
-    console.error(
-      "Ollama connection failed. Likely causes:\n" +
-      "1. Ollama is not running.\n" +
-      "2. CORS is blocking the request. Run 'OLLAMA_ORIGINS=\"*\" ollama serve'.", 
-      e
-    );
+  } catch (e: any) {
+    if (e.name === 'AbortError') {
+      console.error('⏱️ Ollama connection timeout (5s)');
+    } else if (e.message?.includes('Failed to fetch') || e.message?.includes('NetworkError')) {
+      console.error(
+        "❌ Ollama connection failed. Likely causes:\n" +
+        "1. Ollama is not running.\n" +
+        "2. CORS is blocking the request.\n\n" +
+        "Fix for Docker: docker run -e OLLAMA_ORIGINS=\"*\" ...\n" +
+        "Fix for local: OLLAMA_ORIGINS=\"*\" ollama serve"
+      );
+    } else {
+      console.error('❌ Ollama connection error:', e);
+    }
     return false;
   }
 };
@@ -112,14 +134,19 @@ export const checkOllamaConnection = async (url: string): Promise<boolean> => {
  */
 export const getInstalledModels = async (url: string): Promise<string[]> => {
   try {
-    const response = await fetch(`${url.replace(/\/$/, '')}/api/tags`);
+    const endpoint = `${url.replace(/\/$/, '')}/api/tags`;
+    console.log(`📋 Fetching installed models from: ${endpoint}`);
+    
+    const response = await fetch(endpoint);
     if (!response.ok) {
-      throw new Error('Failed to fetch models');
+      throw new Error(`Failed to fetch models: ${response.status}`);
     }
     const data = await response.json();
-    return data.models?.map((m: any) => m.name) || [];
+    const modelNames = data.models?.map((m: any) => m.name) || [];
+    console.log(`📦 Found ${modelNames.length} models:`, modelNames.slice(0, 5));
+    return modelNames;
   } catch (e) {
-    console.error('Failed to get installed models:', e);
+    console.error('❌ Failed to get installed models:', e);
     return [];
   }
 };
@@ -154,27 +181,37 @@ Focus on these categories:
 
 IMPORTANT: Return ONLY the JSON array. Example: ["Nature", "Dog", "Outdoor", "Sunny", "Running"]. Do not add markdown or explanations.`;
 
+  console.log(`🖼️ Analyzing image with model: ${model}`);
+  console.log(`📡 Sending to: ${endpoint}`);
+
   try {
+    const requestBody = {
+      model: model,
+      prompt: prompt,
+      images: [base64Data],
+      stream: false,
+      format: "json",
+      options: {
+        temperature: 0.3,      // Lower temperature for more consistent output
+        num_predict: 500,      // Limit response length
+      }
+    };
+    
+    console.log(`📤 Request body (without base64):`, { ...requestBody, images: ['<base64 data>'] });
+    
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: model,
-        prompt: prompt,
-        images: [base64Data],
-        stream: false,
-        format: "json",
-        options: {
-          temperature: 0.3,      // Lower temperature for more consistent output
-          num_predict: 500,      // Limit response length
-        }
-      }),
+      body: JSON.stringify(requestBody),
     });
+
+    console.log(`📥 Response status: ${response.status}`);
 
     if (!response.ok) {
       const errorText = await response.text();
+      console.error(`❌ Ollama API Error:`, errorText);
       throw new Error(`Ollama API Error: ${response.statusText} - ${errorText}`);
     }
 

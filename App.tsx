@@ -99,15 +99,21 @@ const App: React.FC = () => {
   }, [settings.provider, settings.ollamaUrl, settings.openrouterApiKey, settings.geminiApiKey]);
 
   const checkConnection = async () => {
+    console.log(`🔄 Checking connection for provider: ${settings.provider}`);
+    console.log(`📍 Ollama URL: ${settings.ollamaUrl}`);
+    
     try {
       let isConnected = false;
       
       switch (settings.provider) {
         case 'ollama':
+          console.log('🦙 Testing Ollama connection...');
           isConnected = await checkOllamaConnection(settings.ollamaUrl);
+          console.log(`🦙 Ollama connection result: ${isConnected}`);
           if (isConnected) {
             const models = await getInstalledModels(settings.ollamaUrl);
             setInstalledModels(models);
+            console.log(`🦙 Installed models:`, models);
           }
           break;
         case 'openrouter':
@@ -122,9 +128,11 @@ const App: React.FC = () => {
           break;
       }
       
+      console.log(`✅ Final connection status: ${isConnected ? 'CONNECTED' : 'DISCONNECTED'}`);
       setConnectionStatus(isConnected ? 'connected' : 'error');
       return isConnected;
     } catch (error) {
+      console.error('❌ Connection check failed with exception:', error);
       setConnectionStatus('error');
       return false;
     }
