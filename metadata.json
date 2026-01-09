@@ -1,0 +1,5 @@
+{
+  "name": "LocalSmartPhotoOrganizer",
+  "description": "A privacy-first local photo organizer. Uses your local Ollama instance (LLaVA, Qwen-VL, etc.) to analyze and categorize images without data leaving your network.",
+  "requestFramePermissions": []
+}
