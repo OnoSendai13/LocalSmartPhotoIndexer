@@ -3,6 +3,8 @@
  * Supports various multimodal models like Qwen3-VL, Qwen2.5-VL, LLaVA, MiniCPM-V, etc.
  */
 
+import { ALL_ALLOWED_TAGS, findClosestTag, getTagListForPrompt } from '../types';
+
 export interface OllamaConfig {
   url: string;
   model: string;
@@ -169,17 +171,24 @@ export const analyzeImageWithOllama = async (
   const { url, model } = config;
   const endpoint = `${url.replace(/\/$/, '')}/api/generate`;
 
-  // Optimized prompt for consistent JSON output
-  const prompt = `Analyze this image and provide a JSON array of 5 to 10 single-word keywords.
+  // Get the allowed tags list for the prompt
+  const tagList = getTagListForPrompt();
+  
+  // Strict prompt with closed vocabulary
+  const prompt = `Analyze this image and classify it using ONLY tags from this predefined list.
 
-Focus on these categories:
-1. Main Content (e.g., Nature, Urban, People, Document)
-2. Specific Subject (e.g., Cat, Dog, Car, Flower, Building)
-3. Time of Day/Lighting (e.g., Morning, Night, Sunset, Sunny, Cloudy)
-4. Location (e.g., Indoor, Outdoor, Forest, Street, Beach)
-5. Activity (e.g., Sports, Sleeping, Running, Eating)
+ALLOWED TAGS (choose 3-8 that apply):
+${tagList}
 
-IMPORTANT: Return ONLY the JSON array. Example: ["Nature", "Dog", "Outdoor", "Sunny", "Running"]. Do not add markdown or explanations.`;
+RULES:
+1. ONLY use tags from the list above - no other words allowed
+2. Choose 3-8 tags that best describe the image
+3. Return ONLY a JSON array of strings
+4. Use exact tag names with correct capitalization (e.g., "Female-Model" not "female model")
+
+Example output: ["Portrait", "Female-Model", "Indoor", "Studio", "Fashion"]
+
+Return ONLY the JSON array, nothing else.`;
 
   console.log(`🖼️ Analyzing image with model: ${model}`);
   console.log(`📡 Sending to: ${endpoint}`);
@@ -231,67 +240,53 @@ IMPORTANT: Return ONLY the JSON array. Example: ["Nature", "Dog", "Outdoor", "Su
     // Check if response is empty but thinking field has content (Qwen3-VL behavior)
     if ((!responseText || responseText.trim() === '') && data.thinking) {
       console.log('🧠 Response empty but found thinking field, extracting tags from thinking...');
-      console.log(`🧠 Thinking content preview:`, data.thinking.substring(0, 500));
       
-      // Try to extract tags from the thinking content
-      // Qwen3 often puts its analysis in the thinking field
       const thinkingText = data.thinking;
+      const validTags: string[] = [];
       
-      // Look for JSON array in thinking
+      // Try to extract JSON array from thinking
       const jsonMatch = thinkingText.match(/\[[\s\S]*?\]/);
       if (jsonMatch) {
         try {
           const tags = JSON.parse(jsonMatch[0]);
-          if (Array.isArray(tags) && tags.length > 0) {
-            const cleanedTags = tags
-              .map((t: any) => String(t).trim())
-              .filter((t: string) => t.length > 2 && t.length < 30)
-              .map((t: string) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase())
-              .slice(0, 10);
-            console.log(`✅ Extracted tags from thinking:`, cleanedTags);
-            return cleanedTags.length > 0 ? cleanedTags : ["Uncategorized"];
+          if (Array.isArray(tags)) {
+            for (const tag of tags) {
+              const validTag = findClosestTag(String(tag));
+              if (validTag) validTags.push(validTag);
+            }
           }
         } catch (e) {
-          console.log('Could not parse JSON from thinking field');
+          // JSON parsing failed, continue with text extraction
         }
       }
       
-      // Fallback: extract keywords from thinking text
-      // Look for patterns like "Main Content: Nature" or keywords after categories
-      const categoryPatterns = [
-        /Main Content[:\s]+(\w+)/gi,
-        /Specific Subject[:\s]+(\w+)/gi,
-        /Location[:\s]+(\w+)/gi,
-        /Time[:\s]+(\w+)/gi,
-        /Lighting[:\s]+(\w+)/gi,
-        /Activity[:\s]+(\w+)/gi,
-      ];
-      
-      const extractedWords: string[] = [];
-      for (const pattern of categoryPatterns) {
-        const matches = thinkingText.matchAll(pattern);
-        for (const match of matches) {
-          if (match[1] && match[1].length > 2 && match[1].length < 20) {
-            extractedWords.push(match[1]);
+      // Scan thinking text for any allowed tags (case-insensitive)
+      for (const allowedTag of ALL_ALLOWED_TAGS) {
+        // Create regex that matches the tag (with or without hyphens as spaces)
+        const tagVariants = [
+          allowedTag,
+          allowedTag.replace(/-/g, ' '),
+          allowedTag.replace(/-/g, ''),
+        ];
+        
+        for (const variant of tagVariants) {
+          const regex = new RegExp(`\\b${variant}\\b`, 'gi');
+          if (regex.test(thinkingText)) {
+            if (!validTags.includes(allowedTag)) {
+              validTags.push(allowedTag);
+            }
+            break;
           }
         }
       }
       
-      // Also look for common descriptive words
-      const commonWords = thinkingText.match(/\b(Nature|Urban|People|Portrait|Woman|Man|Building|Outdoor|Indoor|Sunny|Night|Day|Forest|Beach|Street|City|Animal|Dog|Cat|Food|Travel|Art|Museum|Statue|Walking|Sitting|Standing|Posing|Tattoo|Model|Fashion)\b/gi);
-      if (commonWords) {
-        extractedWords.push(...commonWords);
-      }
-      
-      if (extractedWords.length > 0) {
-        const uniqueTags = [...new Set(extractedWords)]
-          .map((t: string) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase())
-          .slice(0, 10);
-        console.log(`✅ Extracted keywords from thinking:`, uniqueTags);
+      if (validTags.length > 0) {
+        const uniqueTags = [...new Set(validTags)].slice(0, 8);
+        console.log(`✅ Extracted valid tags from thinking:`, uniqueTags);
         return uniqueTags;
       }
       
-      console.warn('⚠️ Could not extract meaningful tags from thinking field');
+      console.warn('⚠️ Could not extract valid tags from thinking field');
       return ["Uncategorized"];
     }
     
@@ -315,35 +310,44 @@ IMPORTANT: Return ONLY the JSON array. Example: ["Nature", "Dog", "Outdoor", "Su
     try {
       const tags = JSON.parse(responseText);
       if (Array.isArray(tags)) {
-        // Filter out short tags, clean and capitalize
-        const cleanedTags = tags
-          .map((t: any) => String(t).trim())
-          .filter((t: string) => t.length > 2 && t.length < 30)
-          .map((t: string) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase())
-          .slice(0, 10); // Limit to 10 tags
+        // Validate each tag against allowed list
+        const validTags: string[] = [];
+        for (const tag of tags) {
+          const validTag = findClosestTag(String(tag).trim());
+          if (validTag && !validTags.includes(validTag)) {
+            validTags.push(validTag);
+          }
+        }
         
-        console.log(`✅ Parsed tags:`, cleanedTags);
-        return cleanedTags.length > 0 ? cleanedTags : ["Uncategorized"];
+        console.log(`✅ Validated tags:`, validTags);
+        return validTags.length > 0 ? validTags.slice(0, 8) : ["Uncategorized"];
       }
     } catch (e) {
-      console.warn("⚠️ Could not parse JSON from Ollama, trying regex fallback");
-      console.log("Raw response:", responseText);
+      console.warn("⚠️ Could not parse JSON from Ollama, trying tag extraction");
       
-      // Fallback: extract words if JSON parsing fails
-      // Look for comma-separated or newline-separated words
-      const words = responseText
-        .replace(/[\[\]"'`{}]/g, '')  // Remove brackets and quotes
-        .replace(/```[\s\S]*?```/g, '') // Remove code blocks
-        .split(/[,\n]/)
-        .map((s: string) => s.trim())
-        .filter((s: string) => s.length > 2 && s.length < 30 && /^[a-zA-Z]+$/.test(s));
+      // Fallback: scan for allowed tags in the response text
+      const validTags: string[] = [];
+      for (const allowedTag of ALL_ALLOWED_TAGS) {
+        const tagVariants = [
+          allowedTag,
+          allowedTag.replace(/-/g, ' '),
+          allowedTag.replace(/-/g, ''),
+        ];
+        
+        for (const variant of tagVariants) {
+          const regex = new RegExp(`\\b${variant}\\b`, 'gi');
+          if (regex.test(responseText)) {
+            if (!validTags.includes(allowedTag)) {
+              validTags.push(allowedTag);
+            }
+            break;
+          }
+        }
+      }
       
-      if (words.length > 0) {
-        const cleanedWords = words
-          .map((t: string) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase())
-          .slice(0, 10);
-        console.log(`✅ Fallback extracted words:`, cleanedWords);
-        return cleanedWords;
+      if (validTags.length > 0) {
+        console.log(`✅ Extracted valid tags from response:`, validTags);
+        return validTags.slice(0, 8);
       }
     }
 
