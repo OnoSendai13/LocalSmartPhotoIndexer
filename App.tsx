@@ -548,6 +548,54 @@ const App: React.FC = () => {
     }
   };
 
+  // Export CSV for Excel analysis
+  const handleExportCSV = () => {
+    try {
+      // CSV header
+      const headers = ['Filename', 'Folder', 'Tags', 'Tag Count', 'Status', 'Indexed At'];
+      
+      // Build rows
+      const rows = photos.map(photo => {
+        const tags = photo.tags.join('; '); // Use semicolon to avoid CSV comma issues
+        const tagCount = photo.tags.filter(t => t !== 'Uncategorized' && t !== 'Error-EmptyResponse').length;
+        const indexedAt = photo.indexedAt ? new Date(photo.indexedAt).toLocaleString() : '';
+        
+        return [
+          photo.name,
+          photo.folderPath || '',
+          tags,
+          tagCount.toString(),
+          photo.status,
+          indexedAt
+        ].map(field => {
+          // Escape fields with quotes or commas
+          if (field.includes(',') || field.includes('"') || field.includes('\n')) {
+            return `"${field.replace(/"/g, '""')}"`;
+          }
+          return field;
+        }).join(',');
+      });
+
+      // Combine header and rows
+      const csvContent = [headers.join(','), ...rows].join('\n');
+      
+      // Add BOM for Excel UTF-8 compatibility
+      const bom = '\uFEFF';
+      const blob = new Blob([bom + csvContent], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `photo-tags-${new Date().toISOString().split('T')[0]}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      
+      console.log(`📊 Exported ${photos.length} photos to CSV`);
+    } catch (error) {
+      console.error('CSV export failed:', error);
+      alert('Failed to export CSV');
+    }
+  };
+
   // Retry photos that ended up as "Uncategorized"
   const handleRetryUncategorized = async () => {
     const uncategorizedPhotos = photos.filter(p => 
@@ -890,6 +938,14 @@ const App: React.FC = () => {
                       Retry Uncategorized ({photos.filter(p => p.tags.length === 1 && p.tags[0] === 'Uncategorized').length})
                     </button>
                   )}
+                  
+                  <button
+                    onClick={handleExportCSV}
+                    className="w-full px-4 py-3 bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><path d="M8 13h2"/><path d="M8 17h2"/><path d="M14 13h2"/><path d="M14 17h2"/></svg>
+                    Export for Excel (CSV)
+                  </button>
                   
                   <button
                     onClick={handleExportData}
