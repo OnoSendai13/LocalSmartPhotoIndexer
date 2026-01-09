@@ -38,6 +38,9 @@ const App: React.FC = () => {
 
   // Processing State
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, currentFile: '' });
+  const [currentProcessingPhoto, setCurrentProcessingPhoto] = useState<string>('');
   const processingQueue = useRef<string[]>([]);
   const [tagInput, setTagInput] = useState('');
   
@@ -199,6 +202,7 @@ const App: React.FC = () => {
     }
 
     setPhotos(prev => prev.map(p => p.id === photoId ? { ...p, status: 'processing' } : p));
+    setCurrentProcessingPhoto(photo.name);
 
     try {
       const base64Data = await fileToBase64(photo.file);
@@ -243,7 +247,11 @@ const App: React.FC = () => {
 
   const handleFolderSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
-    if (!files) return;
+    if (!files || files.length === 0) return;
+
+    // Start scanning
+    setIsScanning(true);
+    setScanProgress({ current: 0, total: files.length, currentFile: 'Scanning folder...' });
 
     // Auto-retry connection if it was previously failed
     let currentStatus = connectionStatus;
@@ -254,6 +262,7 @@ const App: React.FC = () => {
                             settings.provider === 'openrouter' ? 'OpenRouter' : 'Gemini';
         alert(`Connection Failed: Please check your ${providerName} configuration in settings.`);
         setShowSettings(true);
+        setIsScanning(false);
         return;
       }
     }
@@ -264,9 +273,21 @@ const App: React.FC = () => {
 
     const newPhotos: Photo[] = [];
     const newQueueIds: string[] = [];
-
-    Array.from(files).forEach((file: File) => {
-      if (!file.type.startsWith('image/')) return;
+    const filesArray = Array.from(files);
+    
+    // Process files with progress updates
+    for (let i = 0; i < filesArray.length; i++) {
+      const file = filesArray[i];
+      
+      // Update scan progress
+      setScanProgress({ 
+        current: i + 1, 
+        total: filesArray.length, 
+        currentFile: file.name 
+      });
+      
+      // Skip non-images
+      if (!file.type.startsWith('image/')) continue;
 
       const id = Math.random().toString(36).substring(7);
       const previewUrl = URL.createObjectURL(file);
@@ -283,7 +304,19 @@ const App: React.FC = () => {
         status: 'pending'
       });
       newQueueIds.push(id);
-    });
+      
+      // Small delay to allow UI to update
+      if (i % 50 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    }
+
+    setIsScanning(false);
+    
+    if (newPhotos.length === 0) {
+      alert('No image files found in the selected folder.');
+      return;
+    }
 
     setPhotos(prev => [...prev, ...newPhotos]);
     processingQueue.current.push(...newQueueIds);
@@ -703,6 +736,53 @@ const App: React.FC = () => {
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Scanning/Processing Overlay */}
+        {(isScanning || isProcessing) && (
+          <div className="fixed bottom-4 right-4 z-50 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl p-4 w-80">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="relative">
+                <svg className="animate-spin text-orange-500" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                </svg>
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-medium text-white">
+                  {isScanning ? 'Scanning folder...' : 'Analyzing photos...'}
+                </p>
+                <p className="text-xs text-zinc-400">
+                  {isScanning 
+                    ? `${scanProgress.current} / ${scanProgress.total} files scanned`
+                    : `${processedCount} / ${photos.length} photos indexed`
+                  }
+                </p>
+              </div>
+            </div>
+            
+            {/* Progress bar */}
+            <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden mb-2">
+              <div 
+                className="h-full bg-gradient-to-r from-orange-500 to-orange-400 transition-all duration-300 ease-out"
+                style={{ 
+                  width: `${isScanning 
+                    ? (scanProgress.total > 0 ? (scanProgress.current / scanProgress.total) * 100 : 0)
+                    : (photos.length > 0 ? (processedCount / photos.length) * 100 : 0)
+                  }%` 
+                }}
+              />
+            </div>
+            
+            {/* Current file being processed */}
+            <p className="text-[10px] text-zinc-500 truncate">
+              {isScanning 
+                ? `📄 ${scanProgress.currentFile}`
+                : currentProcessingPhoto 
+                  ? `🔍 Analyzing: ${currentProcessingPhoto}`
+                  : 'Waiting...'
+              }
+            </p>
           </div>
         )}
 
