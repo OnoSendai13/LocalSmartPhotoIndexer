@@ -344,8 +344,9 @@ const App: React.FC = () => {
       // Only allow standard image formats - exclude RAW files
       const fileName = file.name.toLowerCase();
       
-      // RAW formats to exclude
-      const rawExtensions = [
+      // RAW and large format files to exclude
+      const excludedExtensions = [
+        // RAW formats
         '.cr2', '.cr3',     // Canon
         '.nef', '.nrw',     // Nikon
         '.arw', '.srf',     // Sony
@@ -361,20 +362,31 @@ const App: React.FC = () => {
         '.iiq',             // Phase One
         '.erf',             // Epson
         '.kdc', '.dcr',     // Kodak
+        // Large format files (often too big for vision models)
+        '.tif', '.tiff',    // TIFF (DxO exports, etc.) - often 50-100MB
+        '.psd',             // Photoshop files
+        '.psb',             // Large Photoshop files
       ];
       
-      // Check if it's a RAW file - skip it
-      const isRawFile = rawExtensions.some(ext => fileName.endsWith(ext));
-      if (isRawFile) {
-        continue; // Skip RAW files silently
+      // Check if it's an excluded file - skip it
+      const isExcludedFile = excludedExtensions.some(ext => fileName.endsWith(ext));
+      if (isExcludedFile) {
+        continue; // Skip excluded files silently
       }
       
       // Allowed image formats only
       const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'];
       const isAllowedByExt = allowedExtensions.some(ext => fileName.endsWith(ext));
-      const isImageByType = file.type.startsWith('image/') && !file.type.includes('raw');
+      const isImageByType = file.type.startsWith('image/') && !file.type.includes('raw') && !file.type.includes('tiff');
       
       if (!isImageByType && !isAllowedByExt) {
+        continue;
+      }
+      
+      // Skip files that are too large (>25MB) - they crash Ollama
+      const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
+      if (file.size > MAX_FILE_SIZE) {
+        console.log(`⚠️ Skipping large file: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`);
         continue;
       }
 

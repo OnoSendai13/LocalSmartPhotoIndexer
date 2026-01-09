@@ -220,7 +220,9 @@ The app only processes standard image formats (RAW files are automatically skipp
 
 **Automatically Excluded:**
 - RAW files: CR2, CR3, DNG, NEF, ARW, ORF, RW2, RAF, etc.
-- This allows you to import folders containing both RAW and JPEG without issues
+- Large format files: TIFF, PSD (often too large for vision models)
+- Files larger than 25 MB (would crash Ollama)
+- This allows you to import folders containing mixed formats without issues
 
 ---
 
