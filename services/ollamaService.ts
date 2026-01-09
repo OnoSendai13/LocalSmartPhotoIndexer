@@ -53,46 +53,117 @@ export const RECOMMENDED_MODELS = [
 ];
 
 /**
- * Converts a File object to a Base64 string.
+ * Maximum dimension for images sent to vision models.
+ * Most vision models work at 768x768 or 1024x1024 internally,
+ * so sending larger images is wasteful and can cause OOM errors.
  */
-export const fileToBase64 = async (file: File): Promise<string> => {
+const MAX_IMAGE_DIMENSION = 1024;
+const JPEG_QUALITY = 0.85;
+
+/**
+ * Resizes an image if it exceeds the maximum dimension.
+ * Returns a base64 string of the resized image.
+ */
+const resizeImageIfNeeded = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
-    // Validate file before reading
-    if (!file || file.size === 0) {
-      reject(new Error(`Invalid file: ${file?.name || 'unknown'} (size: ${file?.size || 0})`));
-      return;
-    }
+    const img = new Image();
+    const url = URL.createObjectURL(file);
     
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const base64String = reader.result as string;
+    img.onload = () => {
+      URL.revokeObjectURL(url);
       
-      // Check if result is valid
-      if (!base64String) {
-        reject(new Error(`Failed to read file: ${file.name} - result is null`));
+      const { width, height } = img;
+      
+      // Check if resize is needed
+      if (width <= MAX_IMAGE_DIMENSION && height <= MAX_IMAGE_DIMENSION) {
+        // No resize needed, read original file
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const result = reader.result as string;
+          if (!result) {
+            reject(new Error(`Failed to read file: ${file.name}`));
+            return;
+          }
+          const parts = result.split(',');
+          resolve(parts[1] || '');
+        };
+        reader.onerror = () => reject(new Error(`FileReader error for ${file.name}`));
+        reader.readAsDataURL(file);
         return;
       }
       
-      // Remove the data URL prefix (e.g., "data:image/jpeg;base64,")
-      const parts = base64String.split(',');
-      if (parts.length < 2) {
-        reject(new Error(`Invalid data URL format for file: ${file.name}`));
+      // Calculate new dimensions maintaining aspect ratio
+      let newWidth = width;
+      let newHeight = height;
+      
+      if (width > height) {
+        if (width > MAX_IMAGE_DIMENSION) {
+          newHeight = Math.round((height * MAX_IMAGE_DIMENSION) / width);
+          newWidth = MAX_IMAGE_DIMENSION;
+        }
+      } else {
+        if (height > MAX_IMAGE_DIMENSION) {
+          newWidth = Math.round((width * MAX_IMAGE_DIMENSION) / height);
+          newHeight = MAX_IMAGE_DIMENSION;
+        }
+      }
+      
+      console.log(`📐 Resizing ${file.name}: ${width}x${height} → ${newWidth}x${newHeight}`);
+      
+      // Create canvas and resize
+      const canvas = document.createElement('canvas');
+      canvas.width = newWidth;
+      canvas.height = newHeight;
+      
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('Failed to get canvas context'));
         return;
       }
       
-      const base64Data = parts[1];
+      // Use high-quality image smoothing
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      
+      // Draw resized image
+      ctx.drawImage(img, 0, 0, newWidth, newHeight);
+      
+      // Convert to base64 JPEG
+      const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
+      const base64Data = dataUrl.split(',')[1];
+      
       if (!base64Data) {
-        reject(new Error(`Empty base64 data for file: ${file.name}`));
+        reject(new Error(`Failed to convert resized image to base64: ${file.name}`));
         return;
       }
+      
+      const originalSizeKB = file.size / 1024;
+      const newSizeKB = (base64Data.length * 0.75) / 1024; // base64 is ~33% larger than binary
+      console.log(`📉 Size reduced: ${originalSizeKB.toFixed(0)} KB → ${newSizeKB.toFixed(0)} KB (${((1 - newSizeKB/originalSizeKB) * 100).toFixed(0)}% smaller)`);
       
       resolve(base64Data);
     };
-    reader.onerror = (error) => {
-      reject(new Error(`FileReader error for ${file.name}: ${error}`));
+    
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error(`Failed to load image: ${file.name}`));
     };
-    reader.readAsDataURL(file);
+    
+    img.src = url;
   });
+};
+
+/**
+ * Converts a File object to a Base64 string, resizing if necessary.
+ */
+export const fileToBase64 = async (file: File): Promise<string> => {
+  // Validate file before processing
+  if (!file || file.size === 0) {
+    throw new Error(`Invalid file: ${file?.name || 'unknown'} (size: ${file?.size || 0})`);
+  }
+  
+  // Use resize function which handles both small and large images
+  return resizeImageIfNeeded(file);
 };
 
 /**

@@ -383,12 +383,8 @@ const App: React.FC = () => {
         continue;
       }
       
-      // Skip files that are too large (>25MB) - they crash Ollama
-      const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
-      if (file.size > MAX_FILE_SIZE) {
-        console.log(`⚠️ Skipping large file: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`);
-        continue;
-      }
+      // Note: Large files are now handled by automatic resizing in ollamaService
+      // No need to skip them here anymore!
 
       const relativePath = file.webkitRelativePath || file.name;
       

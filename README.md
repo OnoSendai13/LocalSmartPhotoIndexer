@@ -221,8 +221,12 @@ The app only processes standard image formats (RAW files are automatically skipp
 **Automatically Excluded:**
 - RAW files: CR2, CR3, DNG, NEF, ARW, ORF, RW2, RAF, etc.
 - Large format files: TIFF, PSD (often too large for vision models)
-- Files larger than 25 MB (would crash Ollama)
 - This allows you to import folders containing mixed formats without issues
+
+**Automatic Optimization:**
+- Large JPG/PNG files are automatically resized to 1024px max before analysis
+- This prevents memory issues while preserving image quality for classification
+- Example: A 50MB, 8000x6000 photo becomes ~200KB, 1024x768 for analysis
 
 ---
 
