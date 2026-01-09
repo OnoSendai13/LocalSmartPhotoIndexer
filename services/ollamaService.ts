@@ -1,3 +1,72 @@
+/**
+ * Ollama Service for local image analysis using vision models
+ * Supports various multimodal models like Qwen3-VL, Qwen2.5-VL, LLaVA, MiniCPM-V, etc.
+ */
+
+export interface OllamaConfig {
+  url: string;
+  model: string;
+}
+
+// Recommended vision models with their characteristics
+export const RECOMMENDED_MODELS = [
+  { 
+    id: 'qwen3-vl:8b', 
+    name: 'Qwen3-VL 8B', 
+    vram: '~12GB', 
+    description: 'Latest & best quality, 32 language OCR',
+    recommended: true 
+  },
+  { 
+    id: 'qwen3-vl:2b', 
+    name: 'Qwen3-VL 2B', 
+    vram: '~4GB', 
+    description: 'Fast, good for limited hardware' 
+  },
+  { 
+    id: 'qwen2.5vl:7b', 
+    name: 'Qwen2.5-VL 7B', 
+    vram: '~8GB', 
+    description: 'Excellent balance quality/speed',
+    recommended: true 
+  },
+  { 
+    id: 'qwen2.5vl:3b', 
+    name: 'Qwen2.5-VL 3B', 
+    vram: '~4GB', 
+    description: 'Faster, decent quality' 
+  },
+  { 
+    id: 'minicpm-v', 
+    name: 'MiniCPM-V 2.6', 
+    vram: '~8GB', 
+    description: 'Excellent for documents & OCR' 
+  },
+  { 
+    id: 'llama3.2-vision:11b', 
+    name: 'Llama 3.2 Vision 11B', 
+    vram: '~12GB', 
+    description: "Meta's vision model" 
+  },
+  { 
+    id: 'llava-llama3', 
+    name: 'LLaVA-Llama3', 
+    vram: '~8GB', 
+    description: 'Good general purpose' 
+  },
+  { 
+    id: 'llava:7b', 
+    name: 'LLaVA 7B', 
+    vram: '~6GB', 
+    description: 'Fast, lightweight' 
+  },
+  { 
+    id: 'moondream', 
+    name: 'Moondream', 
+    vram: '~2GB', 
+    description: 'Very low resources, basic quality' 
+  },
+];
 
 /**
  * Converts a File object to a Base64 string.
@@ -16,17 +85,11 @@ export const fileToBase64 = async (file: File): Promise<string> => {
   });
 };
 
-export interface OllamaConfig {
-  url: string;
-  model: string;
-}
-
 /**
- * Checks if Ollama is reachable
+ * Checks if Ollama is reachable and returns available models
  */
 export const checkOllamaConnection = async (url: string): Promise<boolean> => {
   try {
-    // Attempt to fetch tags. This is a lightweight GET request.
     const response = await fetch(`${url.replace(/\/$/, '')}/api/tags`);
     if (!response.ok) {
       console.warn(`Ollama responded but with status: ${response.status}`);
@@ -34,13 +97,43 @@ export const checkOllamaConnection = async (url: string): Promise<boolean> => {
     }
     return true;
   } catch (e) {
-    console.error("Ollama connection failed. Likely causes:\n1. Ollama is not running.\n2. CORS is blocking the request. Run 'OLLAMA_ORIGINS=\"*\" ollama serve'.", e);
+    console.error(
+      "Ollama connection failed. Likely causes:\n" +
+      "1. Ollama is not running.\n" +
+      "2. CORS is blocking the request. Run 'OLLAMA_ORIGINS=\"*\" ollama serve'.", 
+      e
+    );
     return false;
   }
 };
 
 /**
- * Analyzes an image using a local Ollama instance (LLaVA, Qwen-VL, etc.)
+ * Get list of installed models from Ollama
+ */
+export const getInstalledModels = async (url: string): Promise<string[]> => {
+  try {
+    const response = await fetch(`${url.replace(/\/$/, '')}/api/tags`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch models');
+    }
+    const data = await response.json();
+    return data.models?.map((m: any) => m.name) || [];
+  } catch (e) {
+    console.error('Failed to get installed models:', e);
+    return [];
+  }
+};
+
+/**
+ * Check if a specific model is installed
+ */
+export const isModelInstalled = async (url: string, modelName: string): Promise<boolean> => {
+  const models = await getInstalledModels(url);
+  return models.some(m => m.startsWith(modelName.split(':')[0]));
+};
+
+/**
+ * Analyzes an image using a local Ollama instance (Qwen3-VL, Qwen2.5-VL, LLaVA, etc.)
  */
 export const analyzeImageWithOllama = async (
   base64Data: string, 
@@ -49,17 +142,17 @@ export const analyzeImageWithOllama = async (
   const { url, model } = config;
   const endpoint = `${url.replace(/\/$/, '')}/api/generate`;
 
-  // Updated prompt to be more specific about the requested categories
+  // Optimized prompt for consistent JSON output
   const prompt = `Analyze this image and provide a JSON array of 5 to 10 single-word keywords.
-  
-  Focus on these categories:
-  1. Main Content (e.g., Nature, Urban, People, Document)
-  2. Specific Subject (e.g., Cat, Dog, Car, Flower, Building)
-  3. Time of Day/Lighting (e.g., Morning, Night, Sunset, Sunny, Cloudy)
-  4. Location (e.g., Indoor, Outdoor, Forest, Street, Beach)
-  5. Activity (e.g., Sports, Sleeping, Running, Eating)
 
-  IMPORTANT: Return ONLY the JSON array. Example: ["Nature", "Dog", "Outdoor", "Sunny", "Running"]. Do not add markdown or explanations.`;
+Focus on these categories:
+1. Main Content (e.g., Nature, Urban, People, Document)
+2. Specific Subject (e.g., Cat, Dog, Car, Flower, Building)
+3. Time of Day/Lighting (e.g., Morning, Night, Sunset, Sunny, Cloudy)
+4. Location (e.g., Indoor, Outdoor, Forest, Street, Beach)
+5. Activity (e.g., Sports, Sleeping, Running, Eating)
+
+IMPORTANT: Return ONLY the JSON array. Example: ["Nature", "Dog", "Outdoor", "Sunny", "Running"]. Do not add markdown or explanations.`;
 
   try {
     const response = await fetch(endpoint, {
@@ -72,12 +165,17 @@ export const analyzeImageWithOllama = async (
         prompt: prompt,
         images: [base64Data],
         stream: false,
-        format: "json" 
+        format: "json",
+        options: {
+          temperature: 0.3,      // Lower temperature for more consistent output
+          num_predict: 500,      // Limit response length
+        }
       }),
     });
 
     if (!response.ok) {
-      throw new Error(`Ollama API Error: ${response.statusText}`);
+      const errorText = await response.text();
+      throw new Error(`Ollama API Error: ${response.statusText} - ${errorText}`);
     }
 
     const data = await response.json();
@@ -86,7 +184,7 @@ export const analyzeImageWithOllama = async (
     // Clean up response if the model didn't respect JSON strictly
     responseText = responseText.trim();
     
-    // Attempt to extract JSON array if wrapped in markdown
+    // Attempt to extract JSON array if wrapped in markdown or other text
     const jsonMatch = responseText.match(/\[.*\]/s);
     if (jsonMatch) {
       responseText = jsonMatch[0];
@@ -95,23 +193,65 @@ export const analyzeImageWithOllama = async (
     try {
       const tags = JSON.parse(responseText);
       if (Array.isArray(tags)) {
-        // Filter out short tags and capitalize
+        // Filter out short tags, clean and capitalize
         return tags
           .map((t: any) => String(t).trim())
-          .filter((t: string) => t.length > 2)
-          .map((t: string) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase());
+          .filter((t: string) => t.length > 2 && t.length < 30)
+          .map((t: string) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase())
+          .slice(0, 10); // Limit to 10 tags
       }
     } catch (e) {
-      console.warn("Could not parse JSON from Ollama, trying regex", responseText);
+      console.warn("Could not parse JSON from Ollama, trying regex fallback:", responseText);
+      
       // Fallback: extract words if JSON parsing fails
-      const words = responseText.split(/[,\n]/).map((s: string) => s.trim()).filter((s: string) => s.length > 2 && !s.includes('[') && !s.includes(']'));
-      return words.slice(0, 10);
+      const words = responseText
+        .replace(/[\[\]"']/g, '')
+        .split(/[,\n]/)
+        .map((s: string) => s.trim())
+        .filter((s: string) => s.length > 2 && s.length < 30);
+      
+      if (words.length > 0) {
+        return words
+          .map((t: string) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase())
+          .slice(0, 10);
+      }
     }
 
     return ["Uncategorized"];
 
   } catch (error) {
     console.error("Error analyzing image with Ollama:", error);
-    return ["Error"];
+    throw error; // Re-throw to let caller handle it
+  }
+};
+
+/**
+ * Pull a model from Ollama (for future use - requires longer timeout)
+ */
+export const pullModel = async (
+  url: string, 
+  modelName: string, 
+  onProgress?: (status: string) => void
+): Promise<boolean> => {
+  try {
+    const response = await fetch(`${url.replace(/\/$/, '')}/api/pull`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: modelName,
+        stream: false,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to pull model: ${response.statusText}`);
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Error pulling model:', error);
+    return false;
   }
 };
