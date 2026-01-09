@@ -175,16 +175,19 @@ export const analyzeImageWithOllama = async (
   const tagList = getTagListForPrompt();
   
   // Strict prompt with closed vocabulary
-  const prompt = `Analyze this image and classify it using ONLY tags from this predefined list.
+  // /no_think disables Qwen3's thinking mode which causes empty responses
+  const prompt = `/no_think
+Analyze this image and classify it using ONLY tags from this predefined list.
 
 ALLOWED TAGS (choose 3-8 that apply):
 ${tagList}
 
 RULES:
 1. ONLY use tags from the list above - no other words allowed
-2. Choose 3-8 tags that best describe the image
+2. Choose 3-8 tags that ACTUALLY appear in the image
 3. Return ONLY a JSON array of strings
 4. Use exact tag names with correct capitalization (e.g., "Female-Model" not "female model")
+5. Do NOT guess or hallucinate - only tag what you clearly see
 
 Example output: ["Portrait", "Female-Model", "Indoor", "Studio", "Fashion"]
 
@@ -237,56 +240,38 @@ Return ONLY the JSON array, nothing else.`;
     let responseText = data.response || '';
     console.log(`📝 Response text (raw):`, JSON.stringify(responseText));
 
-    // Check if response is empty but thinking field has content (Qwen3-VL behavior)
+    // Check if response is empty but thinking field has content (Qwen3-VL fallback)
+    // This should be rare now that we use /no_think in the prompt
     if ((!responseText || responseText.trim() === '') && data.thinking) {
-      console.log('🧠 Response empty but found thinking field, extracting tags from thinking...');
+      console.log('🧠 Response empty, checking thinking field (fallback)...');
       
       const thinkingText = data.thinking;
       const validTags: string[] = [];
       
-      // Try to extract JSON array from thinking
-      const jsonMatch = thinkingText.match(/\[[\s\S]*?\]/);
+      // ONLY extract if we find a proper JSON array in the thinking
+      // Don't scan for random words - too many false positives
+      const jsonMatch = thinkingText.match(/\["[^"]+(?:"\s*,\s*"[^"]+)*"\]/);
       if (jsonMatch) {
         try {
           const tags = JSON.parse(jsonMatch[0]);
           if (Array.isArray(tags)) {
             for (const tag of tags) {
               const validTag = findClosestTag(String(tag));
-              if (validTag) validTags.push(validTag);
+              if (validTag && !validTags.includes(validTag)) {
+                validTags.push(validTag);
+              }
+            }
+            if (validTags.length > 0) {
+              console.log(`✅ Extracted valid tags from thinking JSON:`, validTags);
+              return validTags.slice(0, 8);
             }
           }
         } catch (e) {
-          // JSON parsing failed, continue with text extraction
+          console.log('Could not parse JSON from thinking field');
         }
       }
       
-      // Scan thinking text for any allowed tags (case-insensitive)
-      for (const allowedTag of ALL_ALLOWED_TAGS) {
-        // Create regex that matches the tag (with or without hyphens as spaces)
-        const tagVariants = [
-          allowedTag,
-          allowedTag.replace(/-/g, ' '),
-          allowedTag.replace(/-/g, ''),
-        ];
-        
-        for (const variant of tagVariants) {
-          const regex = new RegExp(`\\b${variant}\\b`, 'gi');
-          if (regex.test(thinkingText)) {
-            if (!validTags.includes(allowedTag)) {
-              validTags.push(allowedTag);
-            }
-            break;
-          }
-        }
-      }
-      
-      if (validTags.length > 0) {
-        const uniqueTags = [...new Set(validTags)].slice(0, 8);
-        console.log(`✅ Extracted valid tags from thinking:`, uniqueTags);
-        return uniqueTags;
-      }
-      
-      console.warn('⚠️ Could not extract valid tags from thinking field');
+      console.warn('⚠️ No valid JSON array found in thinking field');
       return ["Uncategorized"];
     }
     
