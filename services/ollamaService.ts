@@ -358,55 +358,100 @@ No explanation, just the JSON array.`;
     // Clean up response if the model didn't respect JSON strictly
     responseText = responseText.trim();
     
-    // Attempt to extract JSON array if wrapped in markdown or other text
-    const jsonMatch = responseText.match(/\[[\s\S]*?\]/);
-    if (jsonMatch) {
-      responseText = jsonMatch[0];
-      console.log(`🔍 Extracted JSON array:`, responseText);
-    }
-
+    // Try to parse as JSON first
     try {
-      const tags = JSON.parse(responseText);
-      if (Array.isArray(tags)) {
-        // Validate each tag against allowed list
-        const validTags: string[] = [];
-        for (const tag of tags) {
+      const parsed = JSON.parse(responseText);
+      const validTags: string[] = [];
+      
+      // Case 1: Response is already an array ["tag1", "tag2", ...]
+      if (Array.isArray(parsed)) {
+        console.log(`🔍 Response is a JSON array`);
+        for (const tag of parsed) {
           const validTag = findClosestTag(String(tag).trim());
           if (validTag && !validTags.includes(validTag)) {
             validTags.push(validTag);
           }
         }
-        
-        console.log(`✅ Validated tags:`, validTags);
-        return validTags.length > 0 ? validTags.slice(0, 8) : ["Uncategorized"];
       }
-    } catch (e) {
-      console.warn("⚠️ Could not parse JSON from Ollama, trying tag extraction");
-      
-      // Fallback: scan for allowed tags in the response text
-      const validTags: string[] = [];
-      for (const allowedTag of ALL_ALLOWED_TAGS) {
-        const tagVariants = [
-          allowedTag,
-          allowedTag.replace(/-/g, ' '),
-          allowedTag.replace(/-/g, ''),
-        ];
-        
-        for (const variant of tagVariants) {
-          const regex = new RegExp(`\\b${variant}\\b`, 'gi');
-          if (regex.test(responseText)) {
-            if (!validTags.includes(allowedTag)) {
-              validTags.push(allowedTag);
+      // Case 2: Response is an object with categories {"People": ["Portrait"], "Scene": ["Beach"]}
+      else if (typeof parsed === 'object' && parsed !== null) {
+        console.log(`🔍 Response is a JSON object with categories`);
+        // Extract all values from all categories
+        for (const [category, tags] of Object.entries(parsed)) {
+          if (Array.isArray(tags)) {
+            for (const tag of tags) {
+              const validTag = findClosestTag(String(tag).trim());
+              if (validTag && !validTags.includes(validTag)) {
+                validTags.push(validTag);
+              }
             }
-            break;
+          } else if (typeof tags === 'string') {
+            // Sometimes a category has a single string value
+            const validTag = findClosestTag(tags.trim());
+            if (validTag && !validTags.includes(validTag)) {
+              validTags.push(validTag);
+            }
           }
         }
       }
       
       if (validTags.length > 0) {
-        console.log(`✅ Extracted valid tags from response:`, validTags);
+        console.log(`✅ Validated tags:`, validTags);
         return validTags.slice(0, 8);
       }
+    } catch (e) {
+      console.warn("⚠️ Could not parse JSON from Ollama, trying regex extraction");
+    }
+    
+    // Fallback: Try to extract JSON array from text (in case of markdown wrapper)
+    const jsonArrayMatch = responseText.match(/\[[\s\S]*?\]/g);
+    if (jsonArrayMatch) {
+      const validTags: string[] = [];
+      // Process ALL arrays found, not just the first one
+      for (const arrayStr of jsonArrayMatch) {
+        try {
+          const tags = JSON.parse(arrayStr);
+          if (Array.isArray(tags)) {
+            for (const tag of tags) {
+              const validTag = findClosestTag(String(tag).trim());
+              if (validTag && !validTags.includes(validTag)) {
+                validTags.push(validTag);
+              }
+            }
+          }
+        } catch (e) {
+          // Skip this array if parsing fails
+        }
+      }
+      if (validTags.length > 0) {
+        console.log(`✅ Extracted tags from multiple JSON arrays:`, validTags);
+        return validTags.slice(0, 8);
+      }
+    }
+    
+    // Last resort: scan for allowed tags in the response text
+    const validTags: string[] = [];
+    for (const allowedTag of ALL_ALLOWED_TAGS) {
+      const tagVariants = [
+        allowedTag,
+        allowedTag.replace(/-/g, ' '),
+        allowedTag.replace(/-/g, ''),
+      ];
+      
+      for (const variant of tagVariants) {
+        const regex = new RegExp(`\\b${variant}\\b`, 'gi');
+        if (regex.test(responseText)) {
+          if (!validTags.includes(allowedTag)) {
+            validTags.push(allowedTag);
+          }
+          break;
+        }
+      }
+    }
+    
+    if (validTags.length > 0) {
+      console.log(`✅ Extracted valid tags from response text:`, validTags);
+      return validTags.slice(0, 8);
     }
 
     return ["Uncategorized"];
