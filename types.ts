@@ -39,6 +39,9 @@ export interface SidebarProps {
   totalPhotos: number;
   processedCount: number;
   isProcessing: boolean;
+  onAddPhotos?: () => void;
+  onLinkFolder?: () => void;
+  hasUnlinkedPhotos?: boolean; // Photos without previews
 }
 
 // Photo grid component props

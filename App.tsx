@@ -47,6 +47,9 @@ const App: React.FC = () => {
   
   // Data management
   const [showDataModal, setShowDataModal] = useState(false);
+  
+  // Link folder input ref
+  const linkFolderInputRef = useRef<HTMLInputElement>(null);
 
   // Load settings and photos on mount
   useEffect(() => {
@@ -69,11 +72,12 @@ const App: React.FC = () => {
         // Load saved photos from IndexedDB
         const savedPhotos = await getAllPhotos();
         if (savedPhotos.length > 0) {
+          console.log(`📚 Loading ${savedPhotos.length} indexed photos from database`);
           // Convert stored photos to app photos (without File objects - they can't be persisted)
           const loadedPhotos: Photo[] = savedPhotos.map(sp => ({
             id: sp.id,
             file: new File([], sp.name), // Placeholder - actual file needs re-import
-            previewUrl: '', // Will need to re-import for preview
+            previewUrl: '', // Empty = no preview, will show placeholder
             name: sp.name,
             path: sp.path,
             folderPath: sp.folderPath,
@@ -81,8 +85,9 @@ const App: React.FC = () => {
             status: sp.status,
             indexedAt: sp.indexedAt,
           }));
-          // Note: We only restore metadata, not the actual images
-          // This is shown in the UI as "previously indexed"
+          // Load photos into state - they'll display with placeholders until folder is linked
+          setPhotos(loadedPhotos);
+          console.log(`✅ Loaded ${loadedPhotos.length} photos (use "Link Folder" to see previews)`);
         }
       } catch (error) {
         console.error('Failed to load saved data:', error);
@@ -636,6 +641,66 @@ const App: React.FC = () => {
     }
   };
 
+  // Link an existing folder to show previews for indexed photos
+  const handleLinkFolder = () => {
+    linkFolderInputRef.current?.click();
+  };
+
+  const handleLinkFolderSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+
+    console.log(`🔗 Linking folder with ${files.length} files...`);
+    
+    // Build a map of filename to File for quick lookup
+    const fileMap = new Map<string, File>();
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      // Use full relative path if available, otherwise just name
+      const path = file.webkitRelativePath || file.name;
+      fileMap.set(path, file);
+      // Also map by just the filename for simpler matching
+      fileMap.set(file.name, file);
+    }
+
+    // Match files with existing photos
+    let linkedCount = 0;
+    const updatedPhotos = photos.map(photo => {
+      // Try to find matching file by path first, then by name
+      let matchedFile = fileMap.get(photo.path || '') || fileMap.get(photo.name);
+      
+      if (matchedFile && matchedFile.size > 0) {
+        linkedCount++;
+        return {
+          ...photo,
+          file: matchedFile,
+          previewUrl: '' // Will be lazy-loaded when visible
+        };
+      }
+      return photo;
+    });
+
+    setPhotos(updatedPhotos);
+    
+    console.log(`✅ Linked ${linkedCount} photos to their files`);
+    
+    if (linkedCount > 0) {
+      alert(`Successfully linked ${linkedCount} photos!\n\nPreviews will load as you scroll.`);
+    } else {
+      alert(`No matching files found.\n\nMake sure you're selecting the same folder that was originally indexed.`);
+    }
+
+    // Reset the input
+    if (linkFolderInputRef.current) {
+      linkFolderInputRef.current.value = '';
+    }
+  };
+
+  // Check if there are photos without previews (unlinked)
+  const hasUnlinkedPhotos = useMemo(() => {
+    return photos.some(p => !p.previewUrl && (!p.file || p.file.size === 0));
+  }, [photos]);
+
   // Provider display info
   const getProviderInfo = () => {
     switch (settings.provider) {
@@ -661,6 +726,9 @@ const App: React.FC = () => {
         totalPhotos={photos.length}
         processedCount={processedCount}
         isProcessing={isProcessing}
+        onAddPhotos={() => fileInputRef.current?.click()}
+        onLinkFolder={handleLinkFolder}
+        hasUnlinkedPhotos={hasUnlinkedPhotos}
       />
 
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
@@ -716,6 +784,17 @@ const App: React.FC = () => {
                 }} 
               />
             </label>
+            
+            {/* Hidden input for linking folder */}
+            <input 
+              ref={linkFolderInputRef}
+              type="file" 
+              webkitdirectory=""
+              directory=""
+              multiple 
+              style={{ display: 'none' }}
+              onChange={handleLinkFolderSelect} 
+            />
           </div>
         </div>
 

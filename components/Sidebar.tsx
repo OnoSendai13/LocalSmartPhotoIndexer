@@ -18,13 +18,26 @@ const LoaderIcon = () => (
   <svg className="animate-spin" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
 );
 
+// Plus icon for add button
+const PlusIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+);
+
+// Link icon for folder linking
+const LinkIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+);
+
 export const Sidebar: React.FC<SidebarProps> = ({ 
   categories, 
   selectedCategory, 
   onSelectCategory, 
   totalPhotos,
   processedCount,
-  isProcessing
+  isProcessing,
+  onAddPhotos,
+  onLinkFolder,
+  hasUnlinkedPhotos
 }) => {
   const percentComplete = totalPhotos > 0 ? Math.round((processedCount / totalPhotos) * 100) : 0;
 
@@ -39,7 +52,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       <div className="p-4 flex-1 overflow-y-auto">
-        <div className="mb-6">
+        {/* All Photos Button */}
+        <div className="mb-4">
           <button
             onClick={() => onSelectCategory(null)}
             className={`w-full text-left px-3 py-2 rounded-md flex items-center justify-between transition-colors ${
@@ -54,6 +68,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
             <span className="text-xs font-mono opacity-60">{totalPhotos}</span>
           </button>
+        </div>
+
+        {/* Action Buttons */}
+        <div className="mb-6 space-y-2">
+          {onAddPhotos && (
+            <button
+              onClick={onAddPhotos}
+              disabled={isProcessing}
+              className="w-full text-left px-3 py-2 rounded-md flex items-center gap-3 text-emerald-400 hover:bg-emerald-900/20 hover:text-emerald-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed border border-emerald-800/30"
+            >
+              <PlusIcon />
+              <span className="font-medium text-sm">Add New Photos</span>
+            </button>
+          )}
+          
+          {onLinkFolder && hasUnlinkedPhotos && (
+            <button
+              onClick={onLinkFolder}
+              className="w-full text-left px-3 py-2 rounded-md flex items-center gap-3 text-amber-400 hover:bg-amber-900/20 hover:text-amber-300 transition-colors border border-amber-800/30"
+            >
+              <LinkIcon />
+              <span className="font-medium text-sm">Link Folder</span>
+            </button>
+          )}
         </div>
 
         {categories.length > 0 && (
