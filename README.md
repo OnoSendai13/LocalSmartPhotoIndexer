@@ -24,7 +24,9 @@
 - **Manual Editing** - Add, remove, and customize tags per photo
 - **Folder Import** - Import entire folders with automatic RAW file filtering
 - **Persistent Storage** - Tags saved locally in IndexedDB with auto-save during indexing
-- **Export/Import** - Backup your index to JSON and restore anytime
+- **Browse Without Re-import** - View your indexed photos anytime, even without original files
+- **Link Folder** - Reconnect original photos to see previews
+- **Export/Import** - Backup your index to JSON or CSV (Excel-compatible)
 - **Cloud Options** - Optional OpenRouter/Gemini API for users without GPU
 
 ---
@@ -242,13 +244,25 @@ Your photo index is stored locally in your browser using **IndexedDB**:
 
 ### Export Your Data (Backup)
 
-1. Click the database icon in the header
-2. Click "Export Backup (JSON)"
+1. Click the database icon (📦) in the header
+2. Choose your export format:
+   - **Export for Excel (CSV)** - For analysis in Excel/Google Sheets
+   - **Export Backup (JSON)** - Full backup for restore
 3. Save the file somewhere safe
+
+**CSV Export includes:**
+| Column | Description |
+|--------|-------------|
+| Filename | Photo name |
+| Folder | Source folder path |
+| Tags | All tags (semicolon-separated) |
+| Tag Count | Number of tags |
+| Status | done/pending/error |
+| Indexed At | Date and time |
 
 ### Import / Restore Data
 
-1. Click the database icon in the header
+1. Click the database icon (📦) in the header
 2. Click "Import Backup"
 3. Select your previously exported JSON file
 4. Your tags will be restored
@@ -269,6 +283,56 @@ Console output will show:
 ```
 
 This means you can safely index huge photo collections (10,000+) without worrying about crashes - progress is saved after each photo!
+
+### Browsing Your Indexed Photos
+
+When you reopen the app, your indexed photos are loaded automatically:
+
+```
+┌─────────────────────────────────────┐
+│ 📁 SmartOrganizer                   │
+│    Local AI Indexing                │
+├─────────────────────────────────────┤
+│ 📷 All Photos (5209)                │
+├─────────────────────────────────────┤
+│ ➕ Add New Photos                   │
+│ 🔗 Link Folder                      │
+├─────────────────────────────────────┤
+│ SMART CATEGORIES                    │
+│   🏷️ Portrait (234)                 │
+│   🏷️ Landscape (456)                │
+│   🏷️ Animal (89)                    │
+│   ...                               │
+└─────────────────────────────────────┘
+```
+
+**Sidebar Buttons:**
+
+| Button | Description |
+|--------|-------------|
+| **All Photos** | View all indexed photos with their tags |
+| **➕ Add New Photos** | Index new photos (opens folder picker) |
+| **🔗 Link Folder** | Connect original files to see previews |
+| **Smart Categories** | Filter by tag (Portrait, Landscape, etc.) |
+
+### Viewing Photo Previews (Link Folder)
+
+Since browsers can't store original photo files, previews show placeholders after restart. To see actual thumbnails:
+
+1. Click **🔗 Link Folder** in the sidebar
+2. Select the **same folder** you originally indexed
+3. The app matches files by name and shows previews
+4. Previews load lazily as you scroll (memory efficient)
+
+> **Note**: This doesn't re-index photos - it just links the files for preview display.
+
+### Retry Failed Photos
+
+If some photos ended up as "Uncategorized":
+
+1. Click the database icon (📦) in the header
+2. Click **"Retry Uncategorized (X)"** button
+3. The app will re-analyze only those photos
 
 ### Data Location
 
