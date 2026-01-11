@@ -42,6 +42,8 @@ export interface SidebarProps {
   onAddPhotos?: () => void;
   onLinkFolder?: () => void;
   hasUnlinkedPhotos?: boolean; // Photos without previews
+  onRetryUncategorized?: () => void;
+  uncategorizedCount?: number;
 }
 
 // Photo grid component props

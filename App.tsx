@@ -612,16 +612,36 @@ const App: React.FC = () => {
       return;
     }
     
-    const confirmRetry = confirm(
-      `Found ${uncategorizedPhotos.length} uncategorized photos.\n\n` +
-      `Do you want to re-analyze them with the AI?\n\n` +
-      `Note: Make sure you have the latest code (git pull) for best results.`
-    );
+    // Check if photos have linked files
+    const linkedPhotos = uncategorizedPhotos.filter(p => p.file && p.file.size > 0);
+    const unlinkedCount = uncategorizedPhotos.length - linkedPhotos.length;
+    
+    if (linkedPhotos.length === 0) {
+      alert(
+        `⚠️ No files linked!\n\n` +
+        `To retry uncategorized photos, you need to link the original folder first:\n\n` +
+        `1. Click "🔗 Link Folder" in the sidebar\n` +
+        `2. Select your Photos folder\n` +
+        `3. Then come back here to retry`
+      );
+      return;
+    }
+    
+    let message = `Found ${uncategorizedPhotos.length} uncategorized photos.\n`;
+    if (unlinkedCount > 0) {
+      message += `⚠️ ${unlinkedCount} photos are not linked (will be skipped).\n`;
+      message += `${linkedPhotos.length} photos will be re-analyzed.\n\n`;
+    } else {
+      message += `All photos are linked and ready.\n\n`;
+    }
+    message += `Do you want to re-analyze them with the AI?`;
+    
+    const confirmRetry = confirm(message);
     
     if (!confirmRetry) return;
     
-    // Reset status and clear tags for uncategorized photos
-    const photosToRetry = uncategorizedPhotos.map(p => p.id);
+    // Only retry photos that have linked files
+    const photosToRetry = linkedPhotos.map(p => p.id);
     
     setPhotos(prev => prev.map(p => {
       if (photosToRetry.includes(p.id)) {
@@ -633,7 +653,7 @@ const App: React.FC = () => {
     // Add to processing queue
     processingQueue.current.push(...photosToRetry);
     
-    console.log(`🔄 Retrying ${photosToRetry.length} uncategorized photos...`);
+    console.log(`🔄 Retrying ${photosToRetry.length} uncategorized photos (${unlinkedCount} skipped - not linked)...`);
     
     if (!isProcessing) {
       setIsProcessing(true);
@@ -701,6 +721,11 @@ const App: React.FC = () => {
     return photos.some(p => !p.previewUrl && (!p.file || p.file.size === 0));
   }, [photos]);
 
+  // Count uncategorized photos
+  const uncategorizedCount = useMemo(() => {
+    return photos.filter(p => p.tags.length === 1 && p.tags[0] === 'Uncategorized').length;
+  }, [photos]);
+
   // Provider display info
   const getProviderInfo = () => {
     switch (settings.provider) {
@@ -729,6 +754,8 @@ const App: React.FC = () => {
         onAddPhotos={() => fileInputRef.current?.click()}
         onLinkFolder={handleLinkFolder}
         hasUnlinkedPhotos={hasUnlinkedPhotos}
+        onRetryUncategorized={handleRetryUncategorized}
+        uncategorizedCount={uncategorizedCount}
       />
 
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
