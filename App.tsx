@@ -118,18 +118,10 @@ const App: React.FC = () => {
               console.log(`📁 Folder "${folderName}" found, needs permission - click "Grant Access" to link files`);
               setFolderStatus('needs_permission');
             } else {
-              console.log(`✅ Folder "${folderName}" permission granted, linking files...`);
+              console.log(`✅ Folder "${folderName}" connected! Files will be linked on-demand.`);
               setFolderStatus('connected');
-              
-              // Auto-link files if we have photos loaded
-              if (loadedPhotos.length > 0) {
-                console.log(`🔗 Auto-linking ${loadedPhotos.length} photos from saved handle...`);
-                // Use setTimeout to ensure state is updated first
-                setTimeout(async () => {
-                  const result = await linkFilesFromHandle(handle, loadedPhotos);
-                  console.log(`✅ Auto-linked ${result.linkedCount} files on startup`);
-                }, 100);
-              }
+              // Don't auto-scan the whole folder - it's too slow for 10k+ files
+              // Files will be linked when needed (rescan, preview, etc.)
             }
           } else {
             console.log('📂 No saved folder found - use "Select Folder" to connect');
@@ -661,49 +653,81 @@ const App: React.FC = () => {
       return;
     }
     
-    // Check if photos have linked files
-    const linkedPhotos = uncategorizedPhotos.filter(p => p.file && p.file.size > 0);
-    const unlinkedCount = uncategorizedPhotos.length - linkedPhotos.length;
-    
-    if (linkedPhotos.length === 0) {
+    // Check if we have a connected folder handle
+    if (!directoryHandle) {
       alert(
-        `⚠️ No files linked!\n\n` +
-        `To retry uncategorized photos, you need to link the original folder first:\n\n` +
+        `⚠️ No folder connected!\n\n` +
+        `To retry uncategorized photos, you need to connect the original folder:\n\n` +
         `1. Click "Change folder..." in the sidebar\n` +
         `2. Select your Photos folder\n` +
-        `3. Then come back here to retry\n\n` +
-        `(This connects your photos to the original files for re-analysis)`
+        `3. Then come back here to retry`
       );
       return;
     }
     
-    let message = `Found ${uncategorizedPhotos.length} uncategorized photos.\n`;
-    if (unlinkedCount > 0) {
-      message += `⚠️ ${unlinkedCount} photos are not linked (will be skipped).\n`;
-      message += `${linkedPhotos.length} photos will be re-analyzed.\n\n`;
-    } else {
-      message += `All photos are linked and ready.\n\n`;
-    }
-    message += `Do you want to re-analyze them with the AI?`;
-    
-    const confirmRetry = confirm(message);
+    // Confirm before proceeding
+    const confirmRetry = confirm(
+      `Found ${uncategorizedPhotos.length} uncategorized photos.\n\n` +
+      `The app will link the files from "${connectedFolderName}" and re-analyze them.\n\n` +
+      `This may take a moment. Continue?`
+    );
     
     if (!confirmRetry) return;
     
-    // Only retry photos that have linked files
-    const photosToRetry = linkedPhotos.map(p => p.id);
+    console.log(`🔄 Linking and retrying ${uncategorizedPhotos.length} uncategorized photos...`);
     
-    setPhotos(prev => prev.map(p => {
-      if (photosToRetry.includes(p.id)) {
-        return { ...p, tags: [], status: 'pending' as const };
-      }
-      return p;
-    }));
+    // Link files on-demand for just the uncategorized photos
+    let linkedCount = 0;
+    const photosToRetry: string[] = [];
+    const updatedPhotos = await Promise.all(
+      photos.map(async (photo) => {
+        // Only process uncategorized photos
+        if (!(photo.tags.length === 1 && photo.tags[0] === 'Uncategorized')) {
+          return photo;
+        }
+        
+        // Already has a valid file?
+        if (photo.file && photo.file.size > 0) {
+          linkedCount++;
+          photosToRetry.push(photo.id);
+          return { ...photo, tags: [], status: 'pending' as const };
+        }
+        
+        // Try to get the file from the directory handle
+        const file = await getFileFromDirectory(directoryHandle, photo.path || '');
+        if (file) {
+          linkedCount++;
+          photosToRetry.push(photo.id);
+          return { ...photo, file, previewUrl: '', tags: [], status: 'pending' as const };
+        }
+        
+        // Try by filename only
+        const fileByName = await getFileFromDirectory(directoryHandle, photo.name);
+        if (fileByName) {
+          linkedCount++;
+          photosToRetry.push(photo.id);
+          return { ...photo, file: fileByName, previewUrl: '', tags: [], status: 'pending' as const };
+        }
+        
+        console.log(`⚠️ Could not find file for: ${photo.name}`);
+        return photo;
+      })
+    );
+    
+    if (linkedCount === 0) {
+      alert(
+        `⚠️ Could not find any matching files!\n\n` +
+        `Make sure you selected the correct folder containing your photos.`
+      );
+      return;
+    }
+    
+    setPhotos(updatedPhotos);
     
     // Add to processing queue
     processingQueue.current.push(...photosToRetry);
     
-    console.log(`🔄 Retrying ${photosToRetry.length} uncategorized photos (${unlinkedCount} skipped - not linked)...`);
+    console.log(`✅ Linked ${linkedCount}/${uncategorizedPhotos.length} photos, starting rescan...`);
     
     if (!isProcessing) {
       setIsProcessing(true);
