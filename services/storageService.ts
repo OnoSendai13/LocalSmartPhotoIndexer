@@ -4,9 +4,10 @@
  */
 
 const DB_NAME = 'LocalPhotoIndexer';
-const DB_VERSION = 1;
+const DB_VERSION = 2;  // Updated to match fileSystemService.ts
 const STORE_NAME = 'photos';
 const SETTINGS_STORE = 'settings';
+const HANDLE_STORE = 'directoryHandles';  // For File System Access API
 
 export interface StoredPhoto {
   id: string;
@@ -71,6 +72,12 @@ const openDB = (): Promise<IDBDatabase> => {
       // Create settings store
       if (!db.objectStoreNames.contains(SETTINGS_STORE)) {
         db.createObjectStore(SETTINGS_STORE, { keyPath: 'id' });
+      }
+      
+      // Create directoryHandles store for File System Access API (added in v2)
+      if (!db.objectStoreNames.contains(HANDLE_STORE)) {
+        db.createObjectStore(HANDLE_STORE, { keyPath: 'id' });
+        console.log('📁 Created directoryHandles store for persistent folder access');
       }
     };
   });
