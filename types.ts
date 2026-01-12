@@ -44,6 +44,10 @@ export interface SidebarProps {
   hasUnlinkedPhotos?: boolean; // Photos without previews
   onRetryUncategorized?: () => void;
   uncategorizedCount?: number;
+  // File System Access API
+  folderStatus?: 'none' | 'needs_permission' | 'connected';
+  connectedFolderName?: string | null;
+  onRequestPermission?: () => void;
 }
 
 // Photo grid component props

@@ -33,6 +33,16 @@ const RefreshIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
 );
 
+// Check icon for connected status
+const CheckIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+);
+
+// Key icon for permission needed
+const KeyIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>
+);
+
 export const Sidebar: React.FC<SidebarProps> = ({ 
   categories, 
   selectedCategory, 
@@ -44,7 +54,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onLinkFolder,
   hasUnlinkedPhotos,
   onRetryUncategorized,
-  uncategorizedCount
+  uncategorizedCount,
+  folderStatus,
+  connectedFolderName,
+  onRequestPermission
 }) => {
   const percentComplete = totalPhotos > 0 ? Math.round((processedCount / totalPhotos) * 100) : 0;
 
@@ -56,6 +69,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
           SmartOrganizer
         </h1>
         <p className="text-xs text-zinc-500 mt-1">Local AI Indexing</p>
+        
+        {/* Folder Connection Status */}
+        {folderStatus === 'connected' && connectedFolderName && (
+          <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-400">
+            <CheckIcon />
+            <span className="truncate" title={connectedFolderName}>📁 {connectedFolderName}</span>
+          </div>
+        )}
+        {folderStatus === 'needs_permission' && connectedFolderName && (
+          <button
+            onClick={onRequestPermission}
+            className="mt-2 w-full flex items-center gap-1.5 text-xs text-amber-400 hover:text-amber-300 bg-amber-900/20 rounded px-2 py-1 border border-amber-800/30"
+          >
+            <KeyIcon />
+            <span className="truncate">Grant access to {connectedFolderName}</span>
+          </button>
+        )}
       </div>
 
       <div className="p-4 flex-1 overflow-y-auto">
@@ -90,13 +120,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </button>
           )}
           
-          {onLinkFolder && hasUnlinkedPhotos && (
+          {onLinkFolder && hasUnlinkedPhotos && folderStatus !== 'connected' && (
             <button
               onClick={onLinkFolder}
               className="w-full text-left px-3 py-2 rounded-md flex items-center gap-3 text-amber-400 hover:bg-amber-900/20 hover:text-amber-300 transition-colors border border-amber-800/30"
             >
               <LinkIcon />
-              <span className="font-medium text-sm">Link Folder</span>
+              <span className="font-medium text-sm">
+                {folderStatus === 'none' ? 'Select Folder' : 'Link Folder'}
+              </span>
+            </button>
+          )}
+          
+          {/* Change folder button when already connected */}
+          {onLinkFolder && folderStatus === 'connected' && (
+            <button
+              onClick={onLinkFolder}
+              className="w-full text-left px-3 py-2 rounded-md flex items-center gap-3 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 transition-colors text-xs"
+            >
+              <LinkIcon />
+              <span>Change folder...</span>
             </button>
           )}
           

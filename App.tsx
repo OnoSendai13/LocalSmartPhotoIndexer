@@ -15,6 +15,15 @@ import {
   clearAllPhotos,
   StoredPhoto 
 } from './services/storageService';
+import {
+  isFileSystemAccessSupported,
+  tryRestoreDirectoryAccess,
+  requestDirectoryPermission,
+  selectAndSaveDirectory,
+  getFileFromDirectory,
+  getAllFilesFromDirectory,
+  clearDirectoryHandle,
+} from './services/fileSystemService';
 
 // Add webkitdirectory to InputHTMLAttributes for TypeScript
 declare module 'react' {
@@ -50,6 +59,12 @@ const App: React.FC = () => {
   
   // Link folder input ref
   const linkFolderInputRef = useRef<HTMLInputElement>(null);
+  
+  // File System Access API state
+  const [fsaSupported] = useState(() => isFileSystemAccessSupported());
+  const [directoryHandle, setDirectoryHandle] = useState<FileSystemDirectoryHandle | null>(null);
+  const [folderStatus, setFolderStatus] = useState<'none' | 'needs_permission' | 'connected'>('none');
+  const [connectedFolderName, setConnectedFolderName] = useState<string | null>(null);
 
   // Load settings and photos on mount
   useEffect(() => {
@@ -71,12 +86,14 @@ const App: React.FC = () => {
         
         // Load saved photos from IndexedDB
         const savedPhotos = await getAllPhotos();
+        let loadedPhotos: Photo[] = [];
+        
         if (savedPhotos.length > 0) {
           console.log(`📚 Loading ${savedPhotos.length} indexed photos from database`);
-          // Convert stored photos to app photos (without File objects - they can't be persisted)
-          const loadedPhotos: Photo[] = savedPhotos.map(sp => ({
+          // Convert stored photos to app photos (without File objects initially)
+          loadedPhotos = savedPhotos.map(sp => ({
             id: sp.id,
-            file: new File([], sp.name), // Placeholder - actual file needs re-import
+            file: new File([], sp.name), // Placeholder - will be replaced if folder is connected
             previewUrl: '', // Empty = no preview, will show placeholder
             name: sp.name,
             path: sp.path,
@@ -85,9 +102,37 @@ const App: React.FC = () => {
             status: sp.status,
             indexedAt: sp.indexedAt,
           }));
-          // Load photos into state - they'll display with placeholders until folder is linked
           setPhotos(loadedPhotos);
-          console.log(`✅ Loaded ${loadedPhotos.length} photos (use "Link Folder" to see previews)`);
+        }
+        
+        // Try to restore File System Access (Chrome/Edge only)
+        if (fsaSupported) {
+          console.log('🔗 Checking for saved folder access...');
+          const { handle, needsPermission, folderName } = await tryRestoreDirectoryAccess();
+          
+          if (handle) {
+            setConnectedFolderName(folderName);
+            
+            if (needsPermission) {
+              console.log(`📁 Folder "${folderName}" found, needs permission`);
+              setFolderStatus('needs_permission');
+              setDirectoryHandle(handle);
+            } else {
+              console.log(`✅ Folder "${folderName}" connected automatically!`);
+              setFolderStatus('connected');
+              setDirectoryHandle(handle);
+              
+              // Auto-link files if we have photos
+              if (loadedPhotos.length > 0) {
+                await linkFilesFromHandle(handle, loadedPhotos);
+              }
+            }
+          } else {
+            console.log('📂 No saved folder found');
+            setFolderStatus('none');
+          }
+        } else {
+          console.log('⚠️ File System Access API not supported (use Chrome/Edge)');
         }
       } catch (error) {
         console.error('Failed to load saved data:', error);
@@ -661,8 +706,144 @@ const App: React.FC = () => {
     }
   };
 
-  // Link an existing folder to show previews for indexed photos
+  // Link files from a FileSystemDirectoryHandle (File System Access API)
+  const linkFilesFromHandle = async (
+    handle: FileSystemDirectoryHandle,
+    photosToLink: Photo[] = photos
+  ) => {
+    console.log(`🔗 Linking files from directory handle: ${handle.name}`);
+    
+    // Get all files from the directory
+    const allFiles = await getAllFilesFromDirectory(handle, handle.name);
+    console.log(`📂 Found ${allFiles.size} image files in directory`);
+    
+    // Show sample paths
+    const samplePaths = Array.from(allFiles.keys()).slice(0, 5);
+    console.log('📂 Sample file paths:', samplePaths);
+    
+    // Show sample from DB
+    const samplePhotos = photosToLink.slice(0, 3);
+    console.log('📷 Sample photos from DB:');
+    samplePhotos.forEach(p => {
+      console.log(`   name: "${p.name}", path: "${p.path}"`);
+    });
+    
+    let linkedCount = 0;
+    let matchedByPath = 0;
+    let matchedByRelative = 0;
+    let matchedByName = 0;
+    
+    const updatedPhotos = photosToLink.map(photo => {
+      // Already has a valid file? Count it
+      if (photo.file && photo.file.size > 0) {
+        linkedCount++;
+        return photo;
+      }
+      
+      let matchedFile: File | undefined;
+      
+      // Try 1: Full path match (e.g., "Photos/subdir/IMG_001.jpg")
+      if (photo.path) {
+        matchedFile = allFiles.get(photo.path);
+        if (matchedFile) {
+          matchedByPath++;
+        }
+      }
+      
+      // Try 2: Path without root folder
+      if (!matchedFile && photo.path) {
+        const pathParts = photo.path.split('/');
+        if (pathParts.length > 1) {
+          const relativePath = pathParts.slice(1).join('/');
+          // Try with directory name prefix
+          matchedFile = allFiles.get(`${handle.name}/${relativePath}`);
+          if (matchedFile) {
+            matchedByRelative++;
+          }
+        }
+      }
+      
+      // Try 3: Just filename
+      if (!matchedFile) {
+        matchedFile = allFiles.get(photo.name);
+        if (matchedFile) {
+          matchedByName++;
+        }
+      }
+      
+      if (matchedFile && matchedFile.size > 0) {
+        linkedCount++;
+        return {
+          ...photo,
+          file: matchedFile,
+          previewUrl: '', // Will be lazy-loaded
+        };
+      }
+      
+      return photo;
+    });
+    
+    setPhotos(updatedPhotos);
+    
+    console.log(`✅ Linked ${linkedCount} photos:`);
+    console.log(`   By full path: ${matchedByPath}`);
+    console.log(`   By relative path: ${matchedByRelative}`);
+    console.log(`   By filename: ${matchedByName}`);
+    
+    return { linkedCount, matchedByPath, matchedByRelative, matchedByName };
+  };
+
+  // Request permission for stored folder (called when user clicks "Grant Access")
+  const handleRequestFolderPermission = async () => {
+    if (!directoryHandle) return;
+    
+    const granted = await requestDirectoryPermission(directoryHandle);
+    if (granted) {
+      setFolderStatus('connected');
+      console.log('✅ Permission granted, linking files...');
+      
+      // Link files to photos
+      const result = await linkFilesFromHandle(directoryHandle);
+      
+      alert(
+        `✅ Folder "${connectedFolderName}" connected!\n\n` +
+        `Linked ${result.linkedCount} photos.\n` +
+        `Previews will load as you scroll.`
+      );
+    } else {
+      alert('Permission denied. Please try again or select a new folder.');
+    }
+  };
+
+  // Select a new folder using File System Access API
+  const handleSelectFolderFSA = async () => {
+    const handle = await selectAndSaveDirectory();
+    if (handle) {
+      setDirectoryHandle(handle);
+      setConnectedFolderName(handle.name);
+      setFolderStatus('connected');
+      
+      console.log(`✅ New folder selected: ${handle.name}`);
+      
+      // Link files to photos
+      const result = await linkFilesFromHandle(handle);
+      
+      alert(
+        `✅ Folder "${handle.name}" connected and saved!\n\n` +
+        `Linked ${result.linkedCount} photos.\n` +
+        `This folder will be remembered for future sessions.`
+      );
+    }
+  };
+
+  // Link an existing folder to show previews for indexed photos (legacy fallback)
   const handleLinkFolder = () => {
+    // If File System Access API is supported, use it instead
+    if (fsaSupported) {
+      handleSelectFolderFSA();
+      return;
+    }
+    // Fallback to old method
     linkFolderInputRef.current?.click();
   };
 
@@ -835,6 +1016,9 @@ const App: React.FC = () => {
         hasUnlinkedPhotos={hasUnlinkedPhotos}
         onRetryUncategorized={handleRetryUncategorized}
         uncategorizedCount={uncategorizedCount}
+        folderStatus={folderStatus}
+        connectedFolderName={connectedFolderName}
+        onRequestPermission={handleRequestFolderPermission}
       />
 
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
