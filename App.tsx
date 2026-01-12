@@ -112,23 +112,27 @@ const App: React.FC = () => {
           
           if (handle) {
             setConnectedFolderName(folderName);
+            setDirectoryHandle(handle);
             
             if (needsPermission) {
-              console.log(`📁 Folder "${folderName}" found, needs permission`);
+              console.log(`📁 Folder "${folderName}" found, needs permission - click "Grant Access" to link files`);
               setFolderStatus('needs_permission');
-              setDirectoryHandle(handle);
             } else {
-              console.log(`✅ Folder "${folderName}" connected automatically!`);
+              console.log(`✅ Folder "${folderName}" permission granted, linking files...`);
               setFolderStatus('connected');
-              setDirectoryHandle(handle);
               
-              // Auto-link files if we have photos
+              // Auto-link files if we have photos loaded
               if (loadedPhotos.length > 0) {
-                await linkFilesFromHandle(handle, loadedPhotos);
+                console.log(`🔗 Auto-linking ${loadedPhotos.length} photos from saved handle...`);
+                // Use setTimeout to ensure state is updated first
+                setTimeout(async () => {
+                  const result = await linkFilesFromHandle(handle, loadedPhotos);
+                  console.log(`✅ Auto-linked ${result.linkedCount} files on startup`);
+                }, 100);
               }
             }
           } else {
-            console.log('📂 No saved folder found');
+            console.log('📂 No saved folder found - use "Select Folder" to connect');
             setFolderStatus('none');
           }
         } else {
@@ -665,9 +669,10 @@ const App: React.FC = () => {
       alert(
         `⚠️ No files linked!\n\n` +
         `To retry uncategorized photos, you need to link the original folder first:\n\n` +
-        `1. Click "🔗 Link Folder" in the sidebar\n` +
+        `1. Click "Change folder..." in the sidebar\n` +
         `2. Select your Photos folder\n` +
-        `3. Then come back here to retry`
+        `3. Then come back here to retry\n\n` +
+        `(This connects your photos to the original files for re-analysis)`
       );
       return;
     }
