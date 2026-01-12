@@ -54,6 +54,10 @@ const App: React.FC = () => {
   const [tagInput, setTagInput] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   
+  // Loading state for long operations
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState('');
+  
   // Data management
   const [showDataModal, setShowDataModal] = useState(false);
   
@@ -69,6 +73,9 @@ const App: React.FC = () => {
   // Load settings and photos on mount
   useEffect(() => {
     const loadData = async () => {
+      setIsLoading(true);
+      setLoadingMessage('Loading saved photos...');
+      
       try {
         // Load settings
         const savedSettings = await getSettings();
@@ -132,6 +139,9 @@ const App: React.FC = () => {
         }
       } catch (error) {
         console.error('Failed to load saved data:', error);
+      } finally {
+        setIsLoading(false);
+        setLoadingMessage('');
       }
     };
     
@@ -676,21 +686,36 @@ const App: React.FC = () => {
     
     console.log(`🔄 Linking and retrying ${uncategorizedPhotos.length} uncategorized photos...`);
     
-    // Link files on-demand for just the uncategorized photos
-    let linkedCount = 0;
-    const photosToRetry: string[] = [];
-    const updatedPhotos = await Promise.all(
-      photos.map(async (photo) => {
+    // Show loading indicator
+    setIsLoading(true);
+    setLoadingMessage(`Linking ${uncategorizedPhotos.length} photos...`);
+    
+    try {
+      // Link files on-demand for just the uncategorized photos
+      let linkedCount = 0;
+      const photosToRetry: string[] = [];
+      const updatedPhotos: Photo[] = [];
+      
+      for (let i = 0; i < photos.length; i++) {
+        const photo = photos[i];
+        
         // Only process uncategorized photos
         if (!(photo.tags.length === 1 && photo.tags[0] === 'Uncategorized')) {
-          return photo;
+          updatedPhotos.push(photo);
+          continue;
+        }
+        
+        // Update loading message periodically
+        if (linkedCount % 10 === 0) {
+          setLoadingMessage(`Linking files... ${linkedCount}/${uncategorizedPhotos.length}`);
         }
         
         // Already has a valid file?
         if (photo.file && photo.file.size > 0) {
           linkedCount++;
           photosToRetry.push(photo.id);
-          return { ...photo, tags: [], status: 'pending' as const };
+          updatedPhotos.push({ ...photo, tags: [], status: 'pending' as const });
+          continue;
         }
         
         // Try to get the file from the directory handle
@@ -698,7 +723,8 @@ const App: React.FC = () => {
         if (file) {
           linkedCount++;
           photosToRetry.push(photo.id);
-          return { ...photo, file, previewUrl: '', tags: [], status: 'pending' as const };
+          updatedPhotos.push({ ...photo, file, previewUrl: '', tags: [], status: 'pending' as const });
+          continue;
         }
         
         // Try by filename only
@@ -706,32 +732,41 @@ const App: React.FC = () => {
         if (fileByName) {
           linkedCount++;
           photosToRetry.push(photo.id);
-          return { ...photo, file: fileByName, previewUrl: '', tags: [], status: 'pending' as const };
+          updatedPhotos.push({ ...photo, file: fileByName, previewUrl: '', tags: [], status: 'pending' as const });
+          continue;
         }
         
         console.log(`⚠️ Could not find file for: ${photo.name}`);
-        return photo;
-      })
-    );
+        updatedPhotos.push(photo);
+      }
+      
+      if (linkedCount === 0) {
+        setIsLoading(false);
+        setLoadingMessage('');
+        alert(
+          `⚠️ Could not find any matching files!\n\n` +
+          `Make sure you selected the correct folder containing your photos.`
+        );
+        return;
+      }
     
-    if (linkedCount === 0) {
-      alert(
-        `⚠️ Could not find any matching files!\n\n` +
-        `Make sure you selected the correct folder containing your photos.`
-      );
-      return;
-    }
-    
-    setPhotos(updatedPhotos);
-    
-    // Add to processing queue
-    processingQueue.current.push(...photosToRetry);
-    
-    console.log(`✅ Linked ${linkedCount}/${uncategorizedPhotos.length} photos, starting rescan...`);
-    
-    if (!isProcessing) {
-      setIsProcessing(true);
-      setTimeout(() => processQueueWithPhotos(), 0);
+      setPhotos(updatedPhotos);
+      
+      // Add to processing queue
+      processingQueue.current.push(...photosToRetry);
+      
+      console.log(`✅ Linked ${linkedCount}/${uncategorizedPhotos.length} photos, starting rescan...`);
+      
+      if (!isProcessing) {
+        setIsProcessing(true);
+        setTimeout(() => processQueueWithPhotos(), 0);
+      }
+    } catch (error) {
+      console.error('Error during retry:', error);
+      alert('An error occurred while linking files. Please try again.');
+    } finally {
+      setIsLoading(false);
+      setLoadingMessage('');
     }
   };
 
@@ -885,6 +920,10 @@ const App: React.FC = () => {
 
     console.log(`🔗 Linking folder with ${files.length} files...`);
     
+    // Show loading indicator
+    setIsLoading(true);
+    setLoadingMessage(`Linking ${files.length} files to ${photos.length} photos...`);
+    
     // Build multiple maps for flexible matching
     const fileByFullPath = new Map<string, File>();      // "Photos/subdir/IMG_001.jpg"
     const fileByRelativePath = new Map<string, File>();  // "subdir/IMG_001.jpg" (without root folder)
@@ -999,6 +1038,10 @@ const App: React.FC = () => {
       );
     }
 
+    // Hide loading indicator
+    setIsLoading(false);
+    setLoadingMessage('');
+    
     // Reset the input
     if (linkFolderInputRef.current) {
       linkFolderInputRef.current.value = '';
@@ -1033,6 +1076,23 @@ const App: React.FC = () => {
 
   return (
     <div className="flex h-screen bg-zinc-950 text-zinc-100">
+      {/* Loading Overlay for long operations */}
+      {isLoading && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-zinc-900 rounded-xl border border-zinc-700 p-8 shadow-2xl max-w-md w-full mx-4">
+            <div className="flex flex-col items-center gap-4">
+              {/* Spinner */}
+              <div className="w-12 h-12 border-4 border-zinc-700 border-t-orange-500 rounded-full animate-spin"></div>
+              {/* Message */}
+              <div className="text-center">
+                <p className="text-lg font-medium text-white">{loadingMessage || 'Processing...'}</p>
+                <p className="text-sm text-zinc-400 mt-1">Please wait, this may take a moment</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      
       <Sidebar 
         categories={categories}
         selectedCategory={selectedCategory}
