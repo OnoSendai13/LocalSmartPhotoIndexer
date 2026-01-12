@@ -121,13 +121,21 @@ export const ALLOWED_TAGS = {
     "People",
   ],
   
-  // Animals
+  // Animals & Wildlife
   animals: [
     "Dog",
     "Cat", 
     "Bird",
     "Horse",
     "Animal",
+    "Wildlife",
+    "Lion",
+    "Elephant",
+    "Giraffe",
+    "Zebra",
+    "Monkey",
+    "Fish",
+    "Insect",
   ],
   
   // Scene / Environment
@@ -142,6 +150,13 @@ export const ALLOWED_TAGS = {
     "Street",
     "Village",
     "Countryside",
+    "Desert",
+    "Lake",
+    "River",
+    "Ocean",
+    "Savanna",
+    "Grassland",
+    "Panorama",
   ],
   
   // Location Type
@@ -154,6 +169,13 @@ export const ALLOWED_TAGS = {
     "Church",
     "Castle",
     "Building",
+    "Market",
+    "Shop",
+    "Hotel",
+    "Airport",
+    "Station",
+    "School",
+    "Office",
   ],
   
   // Weather / Time
@@ -177,6 +199,16 @@ export const ALLOWED_TAGS = {
     "Swimming",
     "Hiking",
     "Vacation",
+    "Shopping",
+    "Working",
+    "Playing",
+    "Dancing",
+    "Resting",
+    "Running",
+    "Cycling",
+    "Safari",
+    "Wedding",
+    "Celebration",
   ],
   
   // Objects
@@ -189,6 +221,24 @@ export const ALLOWED_TAGS = {
     "Statue",
     "Tree",
     "Water",
+    "Boat",
+    "Plane",
+    "Train",
+    "Jewelry",
+    "Clothing",
+    "Book",
+    "Monument",
+  ],
+  
+  // Photo Style
+  style: [
+    "Portrait",
+    "Artistic",
+    "Panorama",
+    "Macro",
+    "Black-White",
+    "Golden-Hour",
+    "Night-Shot",
   ],
 } as const;
 
@@ -203,9 +253,189 @@ export const isValidTag = (tag: string): boolean => {
   return ALLOWED_TAGS_SET.has(tag);
 };
 
+// Words to exclude (LLM reasoning residuals, common words that aren't tags)
+const EXCLUDED_WORDS = new Set([
+  // Reasoning words
+  "could", "seems", "here", "there", "this", "that", "the", "and", "with",
+  "appears", "looks", "like", "maybe", "probably", "possibly", "might",
+  "showing", "shows", "contains", "has", "have", "featuring", "features",
+  "image", "photo", "picture", "scene", "visible", "seen", "can", "see",
+  // Common non-descriptive words
+  "very", "quite", "really", "just", "also", "some", "many", "few",
+  "good", "nice", "beautiful", "amazing", "great", "wonderful",
+  "male", "female", "model", "person", "thing", "object", "place",
+  // Time words that aren't weather
+  "daytime", "daylight", "today", "now", "then",
+  // Partial/incomplete
+  "sunbathing", "condition", "tattoo",
+]);
+
+// Synonym mapping to allowed tags
+const TAG_SYNONYMS: Record<string, string> = {
+  // Wildlife synonyms
+  "lioness": "Lion",
+  "lions": "Lion",
+  "elephants": "Elephant",
+  "giraffes": "Giraffe",
+  "zebras": "Zebra",
+  "monkeys": "Monkey",
+  "ape": "Monkey",
+  "apes": "Monkey",
+  "birds": "Bird",
+  "dogs": "Dog",
+  "cats": "Cat",
+  "horses": "Horse",
+  "fishes": "Fish",
+  "insects": "Insect",
+  "bug": "Insect",
+  "bugs": "Insect",
+  "butterfly": "Insect",
+  
+  // Scene synonyms
+  "mountains": "Mountain",
+  "forests": "Forest",
+  "beaches": "Beach",
+  "lakes": "Lake",
+  "rivers": "River",
+  "sea": "Ocean",
+  "seas": "Ocean",
+  "desert": "Desert",
+  "deserts": "Desert",
+  "plains": "Savanna",
+  "prairie": "Grassland",
+  "meadow": "Grassland",
+  
+  // Location synonyms
+  "markets": "Market",
+  "store": "Shop",
+  "stores": "Shop",
+  "shops": "Shop",
+  "mall": "Shop",
+  "cathedral": "Church",
+  "temple": "Church",
+  "mosque": "Church",
+  "palace": "Castle",
+  "chateau": "Castle",
+  "fortress": "Castle",
+  
+  // Activity synonyms
+  "walk": "Walking",
+  "hike": "Hiking",
+  "swim": "Swimming",
+  "run": "Running",
+  "cycle": "Cycling",
+  "bike": "Cycling",
+  "biking": "Cycling",
+  "dance": "Dancing",
+  "rest": "Resting",
+  "sleep": "Resting",
+  "relax": "Resting",
+  "relaxing": "Resting",
+  "shop": "Shopping",
+  "buy": "Shopping",
+  "buying": "Shopping",
+  "purchasing": "Shopping",
+  "selling": "Shopping",
+  "work": "Working",
+  "play": "Playing",
+  "game": "Playing",
+  "celebrate": "Celebration",
+  "celebrating": "Celebration",
+  "party": "Celebration",
+  "birthday": "Celebration",
+  "christmas": "Celebration",
+  "holiday": "Vacation",
+  "holidays": "Vacation",
+  "trip": "Traveling",
+  "journey": "Traveling",
+  "tour": "Traveling",
+  "travel": "Traveling",
+  
+  // People synonyms
+  "child": "Family",
+  "children": "Family",
+  "kids": "Family",
+  "kid": "Family",
+  "baby": "Family",
+  "babies": "Family",
+  "man": "People",
+  "men": "People",
+  "woman": "People",
+  "women": "People",
+  "crowd": "Group",
+  "team": "Group",
+  "friends": "Group",
+  
+  // Weather synonyms
+  "sun": "Sunny",
+  "sunshine": "Sunny",
+  "cloud": "Cloudy",
+  "clouds": "Cloudy",
+  "overcast": "Cloudy",
+  "rain": "Rainy",
+  "raining": "Rainy",
+  "storm": "Rainy",
+  "snow": "Snowy",
+  "snowing": "Snowy",
+  "winter": "Snowy",
+  "dawn": "Sunrise",
+  "dusk": "Sunset",
+  "evening": "Sunset",
+  "golden-hour": "Golden-Hour",
+  "goldenhour": "Golden-Hour",
+  "golden hour": "Golden-Hour",
+  
+  // Style synonyms
+  "artistic": "Artistic",
+  "art": "Art",
+  "bw": "Black-White",
+  "blackwhite": "Black-White",
+  "monochrome": "Black-White",
+  
+  // Object synonyms
+  "vehicle": "Car",
+  "automobile": "Car",
+  "ship": "Boat",
+  "yacht": "Boat",
+  "aircraft": "Plane",
+  "airplane": "Plane",
+  "railway": "Train",
+  "locomotive": "Train",
+  "flowers": "Flower",
+  "plant": "Flower",
+  "plants": "Flower",
+  "trees": "Tree",
+  "building": "Architecture",
+  "buildings": "Architecture",
+  "house": "Architecture",
+  "houses": "Architecture",
+  "sculpture": "Statue",
+  "sculptures": "Statue",
+  "statues": "Statue",
+  "ring": "Jewelry",
+  "necklace": "Jewelry",
+  "bracelet": "Jewelry",
+  "clothes": "Clothing",
+  "dress": "Clothing",
+  "suit": "Clothing",
+  "basket": "Objects",
+  "baskets": "Objects",
+  "container": "Objects",
+};
+
 // Function to find the closest valid tag (for fuzzy matching)
 export const findClosestTag = (input: string): string | null => {
   const normalized = input.toLowerCase().trim();
+  
+  // Check if it's an excluded word
+  if (EXCLUDED_WORDS.has(normalized)) {
+    return null;
+  }
+  
+  // Check synonyms first
+  if (TAG_SYNONYMS[normalized]) {
+    return TAG_SYNONYMS[normalized];
+  }
   
   // Direct match (case-insensitive)
   for (const tag of ALL_ALLOWED_TAGS) {
@@ -214,10 +444,22 @@ export const findClosestTag = (input: string): string | null => {
     }
   }
   
-  // Partial match
+  // Check if normalized matches with hyphen removed
+  const withoutHyphen = normalized.replace(/-/g, '');
   for (const tag of ALL_ALLOWED_TAGS) {
-    if (tag.toLowerCase().includes(normalized) || normalized.includes(tag.toLowerCase())) {
+    if (tag.toLowerCase().replace(/-/g, '') === withoutHyphen) {
       return tag;
+    }
+  }
+  
+  // Partial match (tag contains input or input contains tag)
+  for (const tag of ALL_ALLOWED_TAGS) {
+    const tagLower = tag.toLowerCase();
+    if (tagLower.includes(normalized) || normalized.includes(tagLower)) {
+      // Make sure it's not a very short match that could be misleading
+      if (normalized.length >= 3 && tagLower.length >= 3) {
+        return tag;
+      }
     }
   }
   
