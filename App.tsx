@@ -668,26 +668,85 @@ const App: React.FC = () => {
 
   const handleLinkFolderSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
-    if (!files || files.length === 0) return;
+    if (!files || files.length === 0) {
+      console.log('❌ No files selected');
+      return;
+    }
 
     console.log(`🔗 Linking folder with ${files.length} files...`);
     
-    // Build a map of filename to File for quick lookup
-    const fileMap = new Map<string, File>();
+    // Build multiple maps for flexible matching
+    const fileByFullPath = new Map<string, File>();      // "Photos/subdir/IMG_001.jpg"
+    const fileByRelativePath = new Map<string, File>();  // "subdir/IMG_001.jpg" (without root folder)
+    const fileByName = new Map<string, File>();          // "IMG_001.jpg"
+    
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      // Use full relative path if available, otherwise just name
-      const path = file.webkitRelativePath || file.name;
-      fileMap.set(path, file);
-      // Also map by just the filename for simpler matching
-      fileMap.set(file.name, file);
+      const fullPath = file.webkitRelativePath || file.name;
+      
+      // Full path: "Photos/subdir/IMG_001.jpg"
+      fileByFullPath.set(fullPath, file);
+      
+      // Relative path without root folder: "subdir/IMG_001.jpg"
+      const pathParts = fullPath.split('/');
+      if (pathParts.length > 1) {
+        const relativePath = pathParts.slice(1).join('/');
+        fileByRelativePath.set(relativePath, file);
+      }
+      
+      // Just filename: "IMG_001.jpg"
+      fileByName.set(file.name, file);
     }
+    
+    // Debug: show first few entries from each map
+    console.log('📂 File maps built:');
+    console.log(`   Full paths: ${fileByFullPath.size} entries`);
+    console.log(`   Relative paths: ${fileByRelativePath.size} entries`);
+    console.log(`   By name: ${fileByName.size} entries`);
+    
+    // Show sample from DB
+    const samplePhotos = photos.slice(0, 3);
+    console.log('📷 Sample photos from DB:');
+    samplePhotos.forEach(p => {
+      console.log(`   name: "${p.name}", path: "${p.path}", folderPath: "${p.folderPath}"`);
+    });
 
     // Match files with existing photos
     let linkedCount = 0;
+    let matchedByPath = 0;
+    let matchedByRelative = 0;
+    let matchedByName = 0;
+    
     const updatedPhotos = photos.map(photo => {
-      // Try to find matching file by path first, then by name
-      let matchedFile = fileMap.get(photo.path || '') || fileMap.get(photo.name);
+      // Already has a valid file? Skip
+      if (photo.file && photo.file.size > 0) {
+        linkedCount++;
+        return photo;
+      }
+      
+      let matchedFile: File | undefined;
+      
+      // Try 1: Full path match (e.g., "Photos/IMG_001.jpg")
+      if (photo.path) {
+        matchedFile = fileByFullPath.get(photo.path);
+        if (matchedFile) matchedByPath++;
+      }
+      
+      // Try 2: Path without root folder (e.g., stored as "Photos/sub/IMG.jpg", file is "NewFolder/sub/IMG.jpg")
+      if (!matchedFile && photo.path) {
+        const pathParts = photo.path.split('/');
+        if (pathParts.length > 1) {
+          const relativePath = pathParts.slice(1).join('/');
+          matchedFile = fileByRelativePath.get(relativePath);
+          if (matchedFile) matchedByRelative++;
+        }
+      }
+      
+      // Try 3: Just by filename
+      if (!matchedFile) {
+        matchedFile = fileByName.get(photo.name);
+        if (matchedFile) matchedByName++;
+      }
       
       if (matchedFile && matchedFile.size > 0) {
         linkedCount++;
@@ -702,12 +761,32 @@ const App: React.FC = () => {
 
     setPhotos(updatedPhotos);
     
-    console.log(`✅ Linked ${linkedCount} photos to their files`);
+    console.log(`✅ Linked ${linkedCount} photos:`);
+    console.log(`   By full path: ${matchedByPath}`);
+    console.log(`   By relative path: ${matchedByRelative}`);
+    console.log(`   By filename: ${matchedByName}`);
     
     if (linkedCount > 0) {
-      alert(`Successfully linked ${linkedCount} photos!\n\nPreviews will load as you scroll.`);
+      alert(
+        `Successfully linked ${linkedCount} photos!\n\n` +
+        `• By path: ${matchedByPath}\n` +
+        `• By relative path: ${matchedByRelative}\n` +
+        `• By filename: ${matchedByName}\n\n` +
+        `Previews will load as you scroll.`
+      );
     } else {
-      alert(`No matching files found.\n\nMake sure you're selecting the same folder that was originally indexed.`);
+      // Show debug info
+      const sampleFile = files[0];
+      const samplePhoto = photos[0];
+      alert(
+        `No matching files found.\n\n` +
+        `Debug info:\n` +
+        `• Selected folder has ${files.length} files\n` +
+        `• DB has ${photos.length} photos\n` +
+        `• Sample file path: "${sampleFile?.webkitRelativePath}"\n` +
+        `• Sample DB path: "${samplePhoto?.path}"\n\n` +
+        `Make sure you're selecting the same folder structure.`
+      );
     }
 
     // Reset the input
