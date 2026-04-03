@@ -23,7 +23,7 @@
 - **Smart Categories** - People, Animals, Scenes, Locations, Weather, Activities, Objects
 - **Manual Editing** - Add, remove, and customize tags per photo
 - **Folder Import** - Import entire folders with automatic RAW file filtering
-- **Persistent Storage** - Tags saved locally in IndexedDB with auto-save during indexing
+- **Persistent Storage** - Tags saved in SQLite (server-side) with auto-save during indexing
 - **Browse Without Re-import** - View your indexed photos anytime, even without original files
 - **Link Folder** - Reconnect original photos to see previews
 - **Export/Import** - Backup your index to JSON or CSV (Excel-compatible)
@@ -48,14 +48,17 @@ ollama pull minicpm-v
 # 3. Start Ollama with CORS enabled (REQUIRED for browser access)
 OLLAMA_ORIGINS="*" ollama serve
 
-# 4. Clone and run the app
+# 4. Clone and run the app (frontend + backend)
 git clone https://github.com/OnoSendai13/LocalSmartPhotoIndexer.git
 cd LocalSmartPhotoIndexer
 npm install
-npm run dev
+npm run dev:all
 ```
 
 Open http://localhost:5173 in your browser and start importing photos!
+
+> **First time (from v1)?** Run `npm run migrate` after `dev:all` to import your
+> existing IndexedDB data into SQLite. See [Migrating from v1](#migrating-from-v1) below.
 
 ---
 
@@ -232,14 +235,34 @@ The app only processes standard image formats (RAW files are automatically skipp
 
 ---
 
-## Data Storage & Recovery
+## Architecture
+
+The app runs as two separate processes:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Frontend (Vite dev server on :5173)                    │
+│  React app — handles UI, file picker, AI tagging        │
+│  talks to backend via /api/* proxy                       │
+└──────────────────────┬──────────────────────────────────┘
+                       │ proxy /api/* → localhost:3001
+┌──────────────────────▼──────────────────────────────────┐
+│  Backend (Hono + SQLite on :3001)                        │
+│  Handles: DB reads/writes, file system, EXIF writing     │
+│  Data lives at: server/data/photo-index.db              │
+└─────────────────────────────────────────────────────────┘
+```
+
+- **Frontend**: React + Vite, no database
+- **Backend**: Hono server, SQLite (better-sqlite3), file watchers
+- **API**: REST, proxied through Vite so no CORS issues
 
 ### How Data is Saved
 
-Your photo index is stored locally in your browser using **IndexedDB**:
+Your photo index is stored in **SQLite** (`server/data/photo-index.db`):
 
 - **Auto-save**: Each photo is saved immediately after indexing (crash-safe)
-- **Persistent**: Data survives browser restarts
+- **Persistent**: Data survives browser restarts, independent of browser
 - **Private**: Never leaves your computer
 
 ### Export Your Data (Backup)
@@ -336,16 +359,43 @@ If some photos ended up as "Uncategorized":
 
 ### Data Location
 
-Data is stored in IndexedDB under:
-- **Database**: `LocalPhotoIndexer`
-- **Stores**: `photos` (your indexed photos), `settings` (your preferences)
+Data is stored in the SQLite database:
+- **Database**: `server/data/photo-index.db`
+- **Tables**: `photos`, `folders`, `settings`
 
-To manually clear data:
-1. Open browser DevTools (F12)
-2. Go to Application > Storage > IndexedDB
-3. Delete `LocalPhotoIndexer`
+To manually clear data, delete the SQLite file:
+```bash
+rm server/data/photo-index.db
+```
+Then restart with `npm run dev:all` — the database will be recreated empty.
 
-Or use the "Clear All Data" button in the Data Management modal.
+---
+
+## Migrating from v1
+
+If you used the original app (which stored data in Chrome's IndexedDB), migrate once to bring your data into SQLite:
+
+**Step 1** — Export from the old app:
+1. Open the app in Chrome (before switching to v2)
+2. Click the database icon (📦)
+3. Click **"Export Backup"**
+4. Save as `backup.json` in the `LocalSmartPhotoIndexer/` project folder
+
+**Step 2** — Run the migration:
+```bash
+# Terminal 1: start the backend
+npm run server
+
+# Terminal 2: run the migration script
+npm run migrate
+```
+
+**Step 3** — Start the app:
+```bash
+npm run dev:all
+```
+
+The migration is **idempotent** — running it multiple times is safe. Photos already in SQLite are skipped (`INSERT OR IGNORE`).
 
 ---
 

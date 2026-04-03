@@ -5,16 +5,16 @@ import { Photo, Category, AIProvider, AppSettings, TAG_CATEGORIES, DEFAULT_SETTI
 import { analyzeImageWithOllama, fileToBase64, checkOllamaConnection, RECOMMENDED_MODELS, getInstalledModels } from './services/ollamaService';
 import { analyzeImageWithOpenRouter, checkOpenRouterConnection, OPENROUTER_VISION_MODELS } from './services/openrouterService';
 import { analyzeImageWithGemini, checkGeminiConnection, GEMINI_MODELS } from './services/geminiService';
-import { 
-  savePhoto, 
-  getAllPhotos, 
-  getSettings, 
-  saveSettings, 
-  exportData, 
+import {
+  savePhoto,
+  getAllPhotos,
+  getSettings,
+  saveSettings,
+  exportData,
   importData,
   clearAllPhotos,
-  StoredPhoto 
-} from './services/storageService';
+  Photo as StoredPhoto,
+} from './services/apiService';
 import {
   isFileSystemAccessSupported,
   tryRestoreDirectoryAccess,

@@ -8,6 +8,12 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 5173,  // Avoid conflict with Open WebUI on port 3000
         host: '0.0.0.0',
+        proxy: {
+          '/api': {
+            target: 'http://localhost:3001',
+            changeOrigin: true,
+          },
+        },
       },
       plugins: [react()],
       define: {
