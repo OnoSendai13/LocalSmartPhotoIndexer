@@ -26,16 +26,32 @@ app.get('/api/health', (c) => c.json({ status: 'ok' }));
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
 
+// ─── Server start ─────────────────────────────────────────────────────────────
+
+process.on('uncaughtException', (err) => {
+  console.error('[UNCAUGHT EXCEPTION]', err);
+  // Don't exit — try to keep running
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[UNHANDLED REJECTION]', reason);
+});
+
 async function start() {
   // Init SQLite (async — must load WASM first)
   await initDb();
 
   // Start file watchers for already-registered folders
-  startAllWatchers();
-  startPeriodicScans();
+  try {
+    startAllWatchers();
+    startPeriodicScans();
+  } catch (err) {
+    console.warn('[WATCHER] Could not start watchers:', err);
+  }
 
   const server = serve({ fetch: app.fetch, port: PORT });
   console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`SQLite DB: ${dbPath}`);
 }
 
 function shutdown() {

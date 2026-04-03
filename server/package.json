@@ -4,16 +4,19 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx src/index.ts",
+    "dev": "nodemon --exec tsx src/index.ts --watch src",
     "start": "tsx src/index.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
     "chokidar": "^4.0.3",
+    "exiftool-vendored": "^35.15.1",
     "hono": "^4.6.16",
     "sql.js": "^1.12.0"
   },
   "devDependencies": {
+    "esbuild": "^0.28.0",
+    "nodemon": "^3.1.14",
     "tsx": "^4.19.2",
     "typescript": "~5.8.2"
   }

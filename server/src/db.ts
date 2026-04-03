@@ -114,20 +114,25 @@ export async function initDb(): Promise<Database> {
 
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
 
-  // sql.js init with explicit wasmBinary (synchronous in Node.js)
-  const initSqlJs = (await import('sql.js')).default;
-  const wasmBinary = readFileSync(wasmPath);
-  const SQL = await initSqlJs({ wasmBinary });
+  try {
+    // sql.js init with explicit wasmBinary
+    const initSqlJs = (await import('sql.js')).default;
+    const wasmBinary = readFileSync(wasmPath);
+    const SQL = await initSqlJs({ wasmBinary });
 
-  const fileBuffer = existsSync(dbPath) ? readFileSync(dbPath) : undefined;
-  _db = new SQL.Database(fileBuffer ?? undefined);
-  _wrapper = new Database();
+    const fileBuffer = existsSync(dbPath) ? readFileSync(dbPath) : undefined;
+    _db = new SQL.Database(fileBuffer ?? undefined);
+    _wrapper = new Database();
 
-  _db.run("PRAGMA foreign_keys = ON");
-  _initSchema(_db);
-  console.log('SQLite (sql.js) initialised');
+    _db.run("PRAGMA foreign_keys = ON");
+    _initSchema(_db);
+    console.log(`SQLite (sql.js) initialised — ${dbPath}`);
+  } catch (err) {
+    console.error('[DB] Failed to initialise SQLite:', err);
+    throw err; // Let the caller decide what to do
+  }
 
-  return _wrapper;
+  return _wrapper!;
 }
 
 export function getDb(): Database {
