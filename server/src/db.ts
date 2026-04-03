@@ -11,9 +11,9 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-// sql.js WASM must be located — look relative to this file
+// sql.js WASM — from server/src/, go up two levels to project root, then into server/node_modules
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const wasmPath = path.join(__dirname, '../../node_modules/sql.js/dist/sql-wasm.wasm');
+const wasmPath = path.resolve(__dirname, '../../server/node_modules/sql.js/dist/sql-wasm.wasm');
 
 const dataDir = path.join(process.cwd(), 'data');
 const dbPath = path.join(dataDir, 'photo-index.db');
@@ -117,7 +117,7 @@ export async function initDb(): Promise<Database> {
   // sql.js init with explicit wasmBinary (synchronous in Node.js)
   const initSqlJs = (await import('sql.js')).default;
   const wasmBinary = readFileSync(wasmPath);
-  const SQL = new initSqlJs({ wasmBinary });
+  const SQL = await initSqlJs({ wasmBinary });
 
   const fileBuffer = existsSync(dbPath) ? readFileSync(dbPath) : undefined;
   _db = new SQL.Database(fileBuffer ?? undefined);
