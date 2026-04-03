@@ -25,7 +25,7 @@ function addPhotoSync(folderId: string, folderPath: string, fullPath: string): b
   const relPath = relative(folderPath, fullPath);
   if (!relPath) return false;
 
-  const existing = db.prepare('SELECT id FROM photos WHERE folder_path = ? AND name = ?').get(folderPath, name);
+  const existing = db.prepare('SELECT id FROM photos WHERE folder_path = @fp AND name = @n').get({ fp: folderPath, n: name });
   if (existing) return false;
 
   let stats;
@@ -33,8 +33,8 @@ function addPhotoSync(folderId: string, folderPath: string, fullPath: string): b
 
   db.prepare(`
     INSERT INTO photos (id, name, path, folder_path, size, last_modified, mime_type, tags, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, '[]', 'pending')
-  `).run(randomUUID(), name, relPath, folderPath, stats.size, Math.floor(stats.mtimeMs), getMimeType(name));
+    VALUES (@id, @n, @rp, @fp, @sz, @lm, @mt, '[]', 'pending')
+  `).run({ id: randomUUID(), n: name, rp: relPath, fp: folderPath, sz: stats.size, lm: Math.floor(stats.mtimeMs), mt: getMimeType(name) });
 
   return true;
 }
@@ -61,7 +61,7 @@ export async function scanFolder(folderId: string, folderPath: string): Promise<
   }
 
   scanDir(folderPath);
-  db.prepare('UPDATE folders SET last_scanned_at = unixepoch(\'now\') WHERE id = ?').run(folderId);
+  db.prepare('UPDATE folders SET last_scanned_at = unixepoch(\'now\') WHERE id = @id').run({ id: folderId });
   console.log(`✅ Scan done: ${newPhotos} new in ${folderPath}`);
   return { newPhotos };
 }
@@ -76,7 +76,7 @@ export function startWatching(folderId: string, folderPath: string) {
   watcher.on('add', (p: string) => addPhotoSync(folderId, folderPath, p));
   watcher.on('unlink', (p: string) => {
     const name = p.split(/[\/\\]/).pop();
-    if (name) getDb().prepare('DELETE FROM photos WHERE folder_path = ? AND name = ?').run(folderPath, name);
+    if (name) getDb().prepare('DELETE FROM photos WHERE folder_path = @fp AND name = @n').run({ fp: folderPath, n: name });
   });
   watchers.set(folderId, watcher);
 }

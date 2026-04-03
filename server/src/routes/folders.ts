@@ -21,7 +21,7 @@ foldersRouter.post('/folders', async (c) => {
   if (!body.path) return c.json({ error: 'Folder path is required' }, 400);
 
   const folderPath = body.path;
-  const existing = db.prepare('SELECT * FROM folders WHERE path = ?').get(folderPath) as { id: string; path: string; name: string } | undefined;
+  const existing = db.prepare('SELECT * FROM folders WHERE path = @path').get({ path: folderPath }) as { id: string; path: string; name: string } | undefined;
 
   if (existing) {
     if (existsSync(folderPath)) {
@@ -36,11 +36,11 @@ foldersRouter.post('/folders', async (c) => {
   const id = randomUUID();
   const name = body.name || folderPath.split(/[/\\]/).pop() || folderPath;
 
-  db.prepare('INSERT INTO folders (id, path, name, registered_at) VALUES (?, ?, ?, unixepoch(\'now\'))').run(id, folderPath, name);
+  db.prepare("INSERT INTO folders (id, path, name, registered_at) VALUES (@id, @path, @name, unixepoch('now'))").run({ id, path: folderPath, name });
 
   try {
     const { newPhotos } = await scanFolder(id, folderPath);
-    console.log(`📁 Registered: ${name} → ${folderPath} (${newPhotos} photos)`);
+    console.log(`Registered: ${name} -> ${folderPath} (${newPhotos} photos)`);
     return c.json({ success: true, id, name, newPhotos });
   } catch {
     return c.json({ success: true, id, name, newPhotos: 0 });
@@ -50,7 +50,7 @@ foldersRouter.post('/folders', async (c) => {
 // POST /api/folders/:id/scan
 foldersRouter.post('/folders/:id/scan', async (c) => {
   const db = getDb();
-  const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(c.req.param('id')) as { id: string; path: string; name: string } | undefined;
+  const folder = db.prepare('SELECT * FROM folders WHERE id = @id').get({ id: c.req.param('id') }) as { id: string; path: string; name: string } | undefined;
   if (!folder) return c.json({ error: 'Folder not found' }, 404);
 
   const { newPhotos } = await scanFolder(folder.id, folder.path);
@@ -59,6 +59,6 @@ foldersRouter.post('/folders/:id/scan', async (c) => {
 
 // DELETE /api/folders/:id
 foldersRouter.delete('/folders/:id', (c) => {
-  getDb().prepare('DELETE FROM folders WHERE id = ?').run(c.req.param('id'));
+  getDb().prepare('DELETE FROM folders WHERE id = @id').run({ id: c.req.param('id') });
   return c.json({ success: true });
 });

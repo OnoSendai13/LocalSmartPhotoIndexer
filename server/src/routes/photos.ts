@@ -75,7 +75,8 @@ photosRouter.get('/photos', (c) => {
     params.folderPath = folderPath;
   }
   if (tag) {
-    sql += ` AND tags LIKE '%"${tag}"%'`;
+    sql += ' AND tags LIKE @tag';
+    params.tag = `%"${tag}"%`;
   }
 
   sql += ' ORDER BY created_at DESC';
@@ -87,7 +88,7 @@ photosRouter.get('/photos', (c) => {
 // GET /api/photos/:id
 photosRouter.get('/photos/:id', (c) => {
   const db = getDb();
-  const row = db.prepare('SELECT * FROM photos WHERE id = ?').get(c.req.param('id')) as PhotoRow | undefined;
+  const row = db.prepare('SELECT * FROM photos WHERE id = @id').get({ id: c.req.param('id') }) as PhotoRow | undefined;
   if (!row) return c.json({ error: 'Photo not found' }, 404);
   return c.json(rowToPhoto(row));
 });
@@ -98,7 +99,7 @@ photosRouter.put('/photos/:id', async (c) => {
   const body = await c.req.json();
   const id = c.req.param('id');
 
-  const existing = db.prepare('SELECT * FROM photos WHERE id = ?').get(id) as PhotoRow | undefined;
+  const existing = db.prepare('SELECT * FROM photos WHERE id = @id').get({ id }) as PhotoRow | undefined;
   if (!existing) return c.json({ error: 'Photo not found' }, 404);
 
   const updates: string[] = [];
@@ -108,7 +109,6 @@ photosRouter.put('/photos/:id', async (c) => {
     updates.push('tags = @tags');
     params.tags = JSON.stringify(body.tags);
 
-    // Write tags to EXIF — source of truth is the file itself
     const fullPath = path.join(existing.folder_path, existing.name);
     if (existsSync(fullPath)) {
       void writeTagsToFile(fullPath, body.tags);
@@ -128,10 +128,9 @@ photosRouter.put('/photos/:id', async (c) => {
   }
 
   if (updates.length === 0) return c.json({ error: 'No fields to update' }, 400);
-  updates.push('updated_at = unixepoch(\'now\')');
+  updates.push("updated_at = unixepoch('now')");
 
-  db.prepare(`UPDATE photos SET ${updates.join(', ')} WHERE id = ?`).run(params.id);
-
+  db.prepare(`UPDATE photos SET ${updates.join(', ')} WHERE id = @id`).run(params);
 
   return c.json({ success: true });
 });
@@ -140,7 +139,7 @@ photosRouter.put('/photos/:id', async (c) => {
 photosRouter.post('/photos', async (c) => {
   const db = getDb();
   const body = await c.req.json();
-  const photos = Array.isArray(body) ? body : [body];
+  const photos: Photo[] = Array.isArray(body) ? body : [body];
 
   const insert = db.prepare(`
     INSERT OR IGNORE INTO photos
@@ -172,7 +171,7 @@ photosRouter.post('/photos', async (c) => {
 // DELETE /api/photos/:id
 photosRouter.delete('/photos/:id', (c) => {
   const db = getDb();
-  db.prepare('DELETE FROM photos WHERE id = ?').run(c.req.param('id'));
+  db.prepare('DELETE FROM photos WHERE id = @id').run({ id: c.req.param('id') });
   return c.json({ success: true });
 });
 
@@ -181,8 +180,8 @@ photosRouter.get('/photos/queue/pending', (c) => {
   const db = getDb();
   const limit = parseInt(c.req.query('limit') || '50');
   const rows = db.prepare(
-    'SELECT * FROM photos WHERE status = \'pending\' ORDER BY created_at ASC LIMIT ?'
-  ).all(limit) as PhotoRow[];
+    "SELECT * FROM photos WHERE status = 'pending' ORDER BY created_at ASC LIMIT @limit"
+  ).all({ limit }) as PhotoRow[];
   return c.json(rows.map(rowToPhoto));
 });
 
@@ -217,7 +216,7 @@ photosRouter.get('/stats', (c) => {
 // GET /api/photos/:id/preview
 photosRouter.get('/photos/:id/preview', (c) => {
   try {
-    const row = getDb().prepare('SELECT * FROM photos WHERE id = ?').get(c.req.param('id')) as PhotoRow | undefined;
+    const row = getDb().prepare('SELECT * FROM photos WHERE id = @id').get({ id: c.req.param('id') }) as PhotoRow | undefined;
     if (!row) return c.json({ error: 'Not found' }, 404);
 
     const fullPath = path.join(row.folder_path, row.name);

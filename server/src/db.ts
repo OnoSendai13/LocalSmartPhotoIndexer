@@ -1,34 +1,153 @@
-import Database from 'better-sqlite3';
+/**
+ * SQLite via sql.js (WebAssembly, zero native compilation).
+ * Provides a better-sqlite3-compatible API:
+ *   getDb().prepare(sql).all(params)
+ *   getDb().prepare(sql).get(params)
+ *   getDb().prepare(sql).run(params)
+ *   getDb().transaction(fn)(items)
+ */
+
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+// sql.js WASM must be located — look relative to this file
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const wasmPath = path.join(__dirname, '../../node_modules/sql.js/dist/sql-wasm.wasm');
 
 const dataDir = path.join(process.cwd(), 'data');
+const dbPath = path.join(dataDir, 'photo-index.db');
 
-let db: Database.Database | null = null;
+let _db: import('sql.js').Database | null = null;
 
-export function getDb(): Database.Database {
-  if (!db) {
-    import('fs').then(fs => {
-      if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-    });
-    db = new Database(path.join(dataDir, 'photo-index.db'));
-    db.pragma('journal_mode = WAL');
-    db.pragma('foreign_keys = ON');
-    initSchema(db);
-    console.log('✅ SQLite initialized');
+function save(): void {
+  if (_db) {
+    const data = _db.export();
+    writeFileSync(dbPath, Buffer.from(data));
   }
-  return db;
 }
 
-function initSchema(db: Database.Database) {
-  db.exec(`
+// ─── Statement wrapper ───────────────────────────────────────────────────────
+
+class Stmt {
+  constructor(
+    private db: import('sql.js').Database,
+    private sql: string,
+  ) {}
+
+  all(params?: Record<string, unknown>): unknown[] {
+    return this._rows(params, false);
+  }
+
+  get(params?: Record<string, unknown>): unknown {
+    return this._rows(params, true)[0] ?? undefined;
+  }
+
+  run(params?: Record<string, unknown>): { changes: number } {
+    const mappedSql = this.sql.replace(/@(\w+)/g, '?');
+    const names = [...this.sql.matchAll(/@(\w+)/g)].map(m => m[1]);
+    const values = names.map(k => {
+      const v = params?.[k];
+      return typeof v === 'object' && v !== null ? JSON.stringify(v) : v;
+    });
+    this.db.run(mappedSql, values as import('sql.js').BindParameters[]);
+    const changes = this.db.getRowsModified();
+    save();
+    return { changes };
+  }
+
+  private _rows(params: Record<string, unknown> | undefined, single: boolean): unknown[] {
+    const mappedSql = this.sql.replace(/@(\w+)/g, '?');
+    const names = [...this.sql.matchAll(/@(\w+)/g)].map(m => m[1]);
+    const values = names.map(k => {
+      const v = params?.[k];
+      return typeof v === 'object' && v !== null ? JSON.stringify(v) : v;
+    });
+
+    const stmt = this.db.prepare(mappedSql);
+    if (values.length) stmt.bind(values as import('sql.js').BindParameters[]);
+
+    const rows: unknown[] = [];
+    while (stmt.step()) {
+      const cols = stmt.getColumnNames();
+      const vals = stmt.get();
+      const row: Record<string, unknown> = {};
+      cols.forEach((c, i) => { row[c] = vals[i]; });
+      rows.push(row);
+      if (single) break;
+    }
+    stmt.free();
+    return rows;
+  }
+}
+
+// ─── Database wrapper ────────────────────────────────────────────────────────
+
+class Database {
+  prepare(sql: string): Stmt {
+    return new Stmt(_db!, sql);
+  }
+
+  transaction<T extends unknown[]>(fn: (items: T) => void): (items: T) => void {
+    return (items: T) => {
+      _db!.run('BEGIN TRANSACTION');
+      try {
+        fn(items);
+        _db!.run('COMMIT');
+        save();
+      } catch {
+        _db!.run('ROLLBACK');
+        throw new Error('Transaction rolled back');
+      }
+    };
+  }
+
+  get rowsModified(): number {
+    return _db?.getRowsModified() ?? 0;
+  }
+}
+
+let _wrapper: Database;
+
+export async function initDb(): Promise<Database> {
+  if (_db) return _wrapper!;
+
+  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+
+  // sql.js init with explicit wasmBinary (synchronous in Node.js)
+  const initSqlJs = (await import('sql.js')).default;
+  const wasmBinary = readFileSync(wasmPath);
+  const SQL = new initSqlJs({ wasmBinary });
+
+  const fileBuffer = existsSync(dbPath) ? readFileSync(dbPath) : undefined;
+  _db = new SQL.Database(fileBuffer ?? undefined);
+  _wrapper = new Database();
+
+  _db.run("PRAGMA foreign_keys = ON");
+  _initSchema(_db);
+  console.log('SQLite (sql.js) initialised');
+
+  return _wrapper;
+}
+
+export function getDb(): Database {
+  if (!_wrapper) {
+    throw new Error('Database not initialized — call initDb() first');
+  }
+  return _wrapper;
+}
+
+function _initSchema(db: import('sql.js').Database): void {
+  db.run(`
     CREATE TABLE IF NOT EXISTS folders (
       id TEXT PRIMARY KEY,
       path TEXT NOT NULL UNIQUE,
       name TEXT NOT NULL,
       registered_at INTEGER NOT NULL DEFAULT (unixepoch('now')),
       last_scanned_at INTEGER
-    );
-
+    )
+  `);
+  db.run(`
     CREATE TABLE IF NOT EXISTS photos (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -44,24 +163,25 @@ function initSchema(db: Database.Database) {
       created_at INTEGER NOT NULL DEFAULT (unixepoch('now')),
       updated_at INTEGER NOT NULL DEFAULT (unixepoch('now')),
       UNIQUE(folder_path, name)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_photos_status ON photos(status);
-    CREATE INDEX IF NOT EXISTS idx_photos_folder_path ON photos(folder_path);
-    CREATE INDEX IF NOT EXISTS idx_photos_name ON photos(name);
-
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_photos_status ON photos(status)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_photos_folder_path ON photos(folder_path)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_photos_name ON photos(name)`);
+  db.run(`
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
       updated_at INTEGER NOT NULL DEFAULT (unixepoch('now'))
-    );
+    )
   `);
 }
 
 export function closeDb(): void {
-  if (db) {
-    db.close();
-    db = null;
-    console.log('📦 SQLite closed');
+  if (_db) {
+    save();
+    _db.close();
+    _db = null;
+    console.log('SQLite (sql.js) closed');
   }
 }

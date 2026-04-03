@@ -21,7 +21,7 @@ settingsRouter.get('/settings', (c) => {
 // GET /api/settings/:key
 settingsRouter.get('/settings/:key', (c) => {
   const db = getDb();
-  const row = db.prepare('SELECT * FROM settings WHERE key = ?').get(c.req.param('key')) as { key: string; value: string } | undefined;
+  const row = db.prepare('SELECT * FROM settings WHERE key = @key').get({ key: c.req.param('key') }) as { key: string; value: string } | undefined;
   if (!row) return c.json({ key: c.req.param('key'), value: null });
   return c.json({ key: row.key, value: JSON.parse(row.value) });
 });
@@ -32,12 +32,12 @@ settingsRouter.put('/settings', async (c) => {
   const body = await c.req.json();
   const upsert = db.prepare(`
     INSERT INTO settings (key, value, updated_at)
-    VALUES (?, ?, unixepoch('now'))
+    VALUES (@key, @value, unixepoch('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch('now')
   `);
   const tx = db.transaction((entries: [string, unknown][]) => {
     for (const [key, value] of entries) {
-      upsert.run(key, JSON.stringify(value));
+      upsert.run({ key, value: JSON.stringify(value) });
     }
   });
   const entries = Object.entries(body).filter(([k]) => k !== 'id');
@@ -51,8 +51,8 @@ settingsRouter.put('/settings/:key', async (c) => {
   const body = await c.req.json();
   db.prepare(`
     INSERT INTO settings (key, value, updated_at)
-    VALUES (?, ?, unixepoch('now'))
+    VALUES (@key, @value, unixepoch('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch('now')
-  `).run(c.req.param('key'), JSON.stringify(body.value));
+  `).run({ key: c.req.param('key'), value: JSON.stringify(body.value) });
   return c.json({ success: true });
 });

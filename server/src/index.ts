@@ -1,7 +1,7 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { getDb, closeDb } from './db.js';
+import { initDb, closeDb } from './db.js';
 import { photosRouter } from './routes/photos.js';
 import { foldersRouter } from './routes/folders.js';
 import { settingsRouter } from './routes/settings.js';
@@ -24,21 +24,29 @@ app.route('/api', settingsRouter);
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok' }));
 
-// Init DB + watchers
-getDb();
-startAllWatchers();
-startPeriodicScans();
-
 const PORT = parseInt(process.env.PORT || '3001', 10);
-const server = serve({ fetch: app.fetch, port });
 
-console.log(`🚀 Server running on http://localhost:${PORT}`);
+async function start() {
+  // Init SQLite (async — must load WASM first)
+  await initDb();
+
+  // Start file watchers for already-registered folders
+  startAllWatchers();
+  startPeriodicScans();
+
+  const server = serve({ fetch: app.fetch, port: PORT });
+  console.log(`Server running on http://localhost:${PORT}`);
+}
 
 function shutdown() {
   stopAllWatchers();
   closeDb();
-  server.close();
   process.exit(0);
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+
+start().catch(err => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});
