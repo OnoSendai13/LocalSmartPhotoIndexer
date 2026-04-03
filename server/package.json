@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "nodemon --exec tsx src/index.ts --watch src",
+    "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts"
   },
   "dependencies": {
