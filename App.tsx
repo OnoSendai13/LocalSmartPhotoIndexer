@@ -937,7 +937,7 @@ const App: React.FC = () => {
         setIsLoading(true);
         setLoadingMessage('Suppression en cours…');
         await clearAllPhotos();
-        // Server wiped the DB and kept running — just reload the page to reset React state
+        // Server stays alive — nukeDb() wiped the DB in-place, no restart needed.
         window.location.reload();
       } catch (err) {
         setIsLoading(false);
