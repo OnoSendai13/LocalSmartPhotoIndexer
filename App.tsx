@@ -867,7 +867,7 @@ const App: React.FC = () => {
       await apiUpdatePhotoTags(photoId, newTags);
     } catch (err) {
       console.warn('Failed to update photo tags in backend:', err);
-      // Fallback: use full savePhoto
+      // Fallback: use full savePhoto — include thumbnail so it is not lost
       const photo = photos.find(p => p.id === photoId);
       if (photo) {
         const absoluteFolderPath = photo.absoluteFolderPath || photo.folderPath || '';
@@ -883,6 +883,7 @@ const App: React.FC = () => {
           lastModified: photo.file.lastModified,
           mimeType: photo.file.type,
           tags: newTags,
+          thumbnail: photo.thumbnail,   // ← preserve thumbnail
           status: photo.status,
           indexedAt: photo.indexedAt,
         };
@@ -937,12 +938,7 @@ const App: React.FC = () => {
         setIsLoading(true);
         setLoadingMessage('Suppression en cours…');
         await clearAllPhotos();
-        // The backend stops watchers, wipes the DB, flushes to disk, then
-        // exits the process so tsx/nodemon can restart it with a clean state.
-        // We wait 2 seconds to give the server time to exit and restart before
-        // reloading the page.
-        setLoadingMessage('Redémarrage du serveur…');
-        await new Promise(r => setTimeout(r, 2000));
+        // Server wiped the DB and kept running — just reload the page to reset React state
         window.location.reload();
       } catch (err) {
         setIsLoading(false);
