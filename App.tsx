@@ -925,12 +925,18 @@ const App: React.FC = () => {
   const handleClearData = async () => {
     if (confirm('Supprimer toutes les données indexées ? Cette action est irréversible.')) {
       try {
+        setIsLoading(true);
+        setLoadingMessage('Suppression en cours…');
         await clearAllPhotos();
-        // Reload the page so React state, processingQueue and file handles are all reset.
-        // The backend has already stopped file watchers and flushed an empty DB to disk,
-        // so a page reload will find 0 photos — no risk of stale data reappearing.
+        // The backend stops watchers, wipes the DB, flushes to disk, then
+        // exits the process so tsx/nodemon can restart it with a clean state.
+        // We wait 2 seconds to give the server time to exit and restart before
+        // reloading the page.
+        setLoadingMessage('Redémarrage du serveur…');
+        await new Promise(r => setTimeout(r, 2000));
         window.location.reload();
       } catch (err) {
+        setIsLoading(false);
         console.error('Clear failed:', err);
         alert(`Erreur lors de la suppression : ${err}`);
       }

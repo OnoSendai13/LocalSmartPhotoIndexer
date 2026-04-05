@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { getDb, saveDb, execAndSave } from '../db.js';
+import { getDb, saveDb, execAndSave, nukeDb } from '../db.js';
 import { writeTagsToFile } from '../exif.js';
 import { resetWatchers } from '../watcher.js';
 import path from 'path';
@@ -311,29 +311,35 @@ photosRouter.post('/photos/import', async (c) => {
 
 // DELETE /api/photos/all — wipe every row from photos AND folders, flush to disk
 photosRouter.delete('/photos/all', (c) => {
-  // 1. Stop all chokidar watchers so they can't re-insert photos during/after clear
+  // 1. Stop all chokidar watchers FIRST so they fire no more 'add' events
   try { resetWatchers(); } catch { /* non-fatal */ }
 
   try {
-    // 2. Wipe both tables in a single atomic exec and flush to disk immediately.
-    //    execAndSave bypasses the wrapper's per-statement save() calls and writes
-    //    once after both DELETEs complete inside the same sql.js run() call.
-    execAndSave('DELETE FROM photos; DELETE FROM folders;');
+    // 2. nukeDb(): deletes everything in-memory, writes the empty DB to disk,
+    //    then FREEZES save() so any in-flight watcher callback that happens to
+    //    fire before Node.js fully processes the close() cannot overwrite the
+    //    freshly-emptied file with stale data.
+    nukeDb();
   } catch (err) {
-    console.error('[CLEAR] execAndSave failed:', err);
-    // Fallback: try via wrapper individually
+    console.error('[CLEAR] nukeDb failed — falling back to execAndSave:', err);
     try {
-      const db = getDb();
-      db.prepare('DELETE FROM photos').run();
-      db.prepare('DELETE FROM folders').run();
-      saveDb();
+      execAndSave('DELETE FROM photos; DELETE FROM folders;');
     } catch (err2) {
       console.error('[CLEAR] fallback also failed:', err2);
       return c.json({ error: 'Failed to clear data' }, 500);
     }
   }
 
-  console.log('[CLEAR] All photos and folders deleted from DB and flushed to disk');
+  console.log('[CLEAR] ✅ All photos and folders deleted and flushed to disk. Restarting server process...');
+
+  // 3. Schedule a process exit so tsx/nodemon restarts the server automatically.
+  //    This guarantees a clean in-memory state (no frozen DB, no stale watchers).
+  //    The timeout gives the HTTP response time to be sent before exit.
+  setTimeout(() => {
+    console.log('[CLEAR] Server exiting for clean restart...');
+    process.exit(0);
+  }, 300);
+
   return c.json({ success: true });
 });
 
