@@ -11,18 +11,27 @@ const API_BASE = '/api';
 // BUG FIX #1: Lazy loading image component
 // Falls back to backend /api/photos/:id/preview when no file blob is available
 // This allows photos to display correctly after page refresh without re-selecting the folder
+const Placeholder: React.FC<{ name: string }> = ({ name }) => (
+  <div className="w-full h-full bg-gradient-to-br from-zinc-800 to-zinc-900 flex flex-col items-center justify-center p-3 text-center">
+    <svg className="w-10 h-10 text-zinc-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+    </svg>
+    <p className="text-[10px] text-zinc-500 truncate w-full">{name}</p>
+  </div>
+);
+
 const LazyImage: React.FC<{ photo: Photo; className?: string }> = ({ photo, className }) => {
   const [imageUrl, setImageUrl] = useState<string>('');
   const [isLoaded, setIsLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
   const [usedBlobUrl, setUsedBlobUrl] = useState(false);
   const imgRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setIsLoaded(false);
+    setFailed(false);
 
-    // Priority 1: real file blob available → create a full-resolution object URL.
-    // This is the live-session path (folder just added, file picker still open).
-    // Full-res looks perfect and is revoked on unmount.
+    // Priority 1: real File blob (live session — full original resolution)
     if (photo.file && photo.file.size > 0) {
       const url = URL.createObjectURL(photo.file);
       setImageUrl(url);
@@ -30,49 +39,35 @@ const LazyImage: React.FC<{ photo: Photo; className?: string }> = ({ photo, clas
       return;
     }
 
-    // Priority 2: stored thumbnail (base64 JPEG 480px) — works after page reload
-    // when the backend cannot reach the file (Windows path / different OS).
+    // Priority 2: base64 thumbnail stored in DB (works after reload, even on Windows)
     if (photo.previewUrl) {
       setImageUrl(photo.previewUrl);
       return;
     }
 
-    // Priority 3: backend /preview endpoint — works when the server CAN read the file
-    // (same machine, accessible path). Used as last resort.
+    // Priority 3: backend /preview (only works if server can reach the file)
     setImageUrl(`${API_BASE}/photos/${encodeURIComponent(photo.id)}/preview`);
   }, [photo.file, photo.previewUrl, photo.id]);
 
-  // Cleanup blob URL on unmount to avoid memory leaks
+  // Cleanup blob URL on unmount
   useEffect(() => {
-    return () => {
-      if (usedBlobUrl && imageUrl) {
-        URL.revokeObjectURL(imageUrl);
-      }
-    };
+    return () => { if (usedBlobUrl && imageUrl) URL.revokeObjectURL(imageUrl); };
   }, [imageUrl, usedBlobUrl]);
 
   return (
     <div ref={imgRef} className="w-full h-full">
-      {imageUrl ? (
+      {/* Show placeholder if no URL yet or if load failed */}
+      {(!imageUrl || failed) ? (
+        <Placeholder name={photo.name} />
+      ) : (
         <img
           src={imageUrl}
           alt={photo.name}
           className={`${className} ${!isLoaded ? 'opacity-0' : 'opacity-100'} transition-opacity duration-300`}
           onLoad={() => setIsLoaded(true)}
-          onError={(e) => {
-            // If backend preview fails, show placeholder
-            const target = e.target as HTMLImageElement;
-            target.style.display = 'none';
-          }}
+          onError={() => setFailed(true)}  /* show placeholder on 404, not black square */
           loading="lazy"
         />
-      ) : (
-        <div className="w-full h-full bg-gradient-to-br from-zinc-800 to-zinc-900 flex flex-col items-center justify-center p-3 text-center">
-          <svg className="w-10 h-10 text-zinc-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-          </svg>
-          <p className="text-[10px] text-zinc-500 truncate w-full">{photo.name}</p>
-        </div>
       )}
     </div>
   );

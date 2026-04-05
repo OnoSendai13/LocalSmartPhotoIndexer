@@ -440,39 +440,42 @@ const App: React.FC = () => {
       const tags = await analyzeImage(base64Data, mimeType);
       console.log(`✅ Tags for ${photo.name}:`, tags);
 
-      // Generate a thumbnail from the real file for persistent preview.
-      // Stored in the DB so previews work after page reload even when the
-      // backend cannot reach the file (e.g. photos on Windows, server on Linux).
-      // MAX=480px: covers a 5-col grid at any screen density (2× Retina = 240px CSS).
+      // Generate a thumbnail for persistent preview (stored in DB).
+      // Works in BOTH cases:
+      //   A) hasRealFile → load from File blob via createObjectURL
+      //   B) !hasRealFile → load from the base64 we already fetched for the LLM
+      //      (the data: URL is already in memory — zero extra fetch needed)
       let thumbnailBase64: string | undefined;
-      if (hasRealFile) {
-        try {
-          thumbnailBase64 = await new Promise<string>((resolve) => {
-            const img = new Image();
-            const objUrl = URL.createObjectURL(photo.file!);
-            img.onload = () => {
-              const MAX = 480;
-              const ratio = Math.min(MAX / img.width, MAX / img.height, 1); // never upscale
-              const w = Math.round(img.width * ratio);
-              const h = Math.round(img.height * ratio);
-              const canvas = document.createElement('canvas');
-              canvas.width = w; canvas.height = h;
-              const ctx = canvas.getContext('2d');
-              if (ctx) {
-                ctx.imageSmoothingEnabled = true;
-                ctx.imageSmoothingQuality = 'high';
-                ctx.drawImage(img, 0, 0, w, h);
-                resolve(canvas.toDataURL('image/jpeg', 0.88));
-              } else {
-                resolve('');
-              }
-              URL.revokeObjectURL(objUrl);
-            };
-            img.onerror = () => { URL.revokeObjectURL(objUrl); resolve(''); };
-            img.src = objUrl;
-          });
-        } catch { thumbnailBase64 = undefined; }
-      }
+      try {
+        thumbnailBase64 = await new Promise<string>((resolve) => {
+          const img = new Image();
+          // Case A: use object URL from the real file
+          // Case B: use the base64 data we already have (prepend data URI header)
+          const src = hasRealFile
+            ? URL.createObjectURL(photo.file!)
+            : `data:${mimeType};base64,${base64Data}`;
+          img.onload = () => {
+            const MAX = 480;
+            const ratio = Math.min(MAX / img.width, MAX / img.height, 1);
+            const w = Math.round(img.width * ratio);
+            const h = Math.round(img.height * ratio);
+            const canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.imageSmoothingEnabled = true;
+              ctx.imageSmoothingQuality = 'high';
+              ctx.drawImage(img, 0, 0, w, h);
+              resolve(canvas.toDataURL('image/jpeg', 0.88));
+            } else {
+              resolve('');
+            }
+            if (hasRealFile) URL.revokeObjectURL(src);
+          };
+          img.onerror = () => { if (hasRealFile) URL.revokeObjectURL(src); resolve(''); };
+          img.src = src;
+        });
+      } catch { thumbnailBase64 = undefined; }
 
       const updatedPhoto = {
         ...photo,
@@ -934,7 +937,7 @@ const App: React.FC = () => {
         setIsLoading(true);
         setLoadingMessage('Suppression en cours…');
         await clearAllPhotos();
-        // Server wiped the DB and kept running — just reload the page to reset React state
+        // Server stays alive — nukeDb() wiped the DB in-place, no restart needed.
         window.location.reload();
       } catch (err) {
         setIsLoading(false);
