@@ -6,37 +6,48 @@ interface PhotoGridProps {
   onPhotoClick: (photo: Photo) => void;
 }
 
-// Lazy loading image component - only creates blob URL when visible
+const API_BASE = '/api';
+
+// BUG FIX #1: Lazy loading image component
+// Falls back to backend /api/photos/:id/preview when no file blob is available
+// This allows photos to display correctly after page refresh without re-selecting the folder
 const LazyImage: React.FC<{ photo: Photo; className?: string }> = ({ photo, className }) => {
   const [imageUrl, setImageUrl] = useState<string>('');
   const [isLoaded, setIsLoaded] = useState(false);
+  const [usedBlobUrl, setUsedBlobUrl] = useState(false);
   const imgRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    // Reset state when photo changes
+    setIsLoaded(false);
+
     // If previewUrl already exists, use it
     if (photo.previewUrl) {
       setImageUrl(photo.previewUrl);
       return;
     }
 
-    // If no file, show placeholder
+    // BUG FIX #1: If no valid file blob, use backend preview endpoint directly
+    // This is the key fix - photos loaded from DB have empty File objects (size=0)
+    // so we must serve them via the backend which reads from the absolute path on disk
     if (!photo.file || photo.file.size === 0) {
+      setImageUrl(`${API_BASE}/photos/${encodeURIComponent(photo.id)}/preview`);
       return;
     }
 
-    // Use IntersectionObserver for lazy loading
+    // Has a real file blob - use IntersectionObserver for lazy loading
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
           if (entry.isIntersecting && !imageUrl) {
-            // Create blob URL only when visible
             const url = URL.createObjectURL(photo.file);
             setImageUrl(url);
+            setUsedBlobUrl(true);
             observer.disconnect();
           }
         });
       },
-      { rootMargin: '200px' } // Start loading 200px before visible
+      { rootMargin: '200px' }
     );
 
     if (imgRef.current) {
@@ -45,21 +56,17 @@ const LazyImage: React.FC<{ photo: Photo; className?: string }> = ({ photo, clas
 
     return () => {
       observer.disconnect();
-      // Revoke blob URL when component unmounts
-      if (imageUrl && !photo.previewUrl) {
-        URL.revokeObjectURL(imageUrl);
-      }
     };
-  }, [photo.file, photo.previewUrl]);
+  }, [photo.file, photo.previewUrl, photo.id]);
 
-  // Cleanup on unmount
+  // Cleanup blob URL on unmount
   useEffect(() => {
     return () => {
-      if (imageUrl && !photo.previewUrl) {
+      if (usedBlobUrl && imageUrl) {
         URL.revokeObjectURL(imageUrl);
       }
     };
-  }, [imageUrl, photo.previewUrl]);
+  }, [imageUrl, usedBlobUrl]);
 
   return (
     <div ref={imgRef} className="w-full h-full">
@@ -69,6 +76,11 @@ const LazyImage: React.FC<{ photo: Photo; className?: string }> = ({ photo, clas
           alt={photo.name}
           className={`${className} ${!isLoaded ? 'opacity-0' : 'opacity-100'} transition-opacity duration-300`}
           onLoad={() => setIsLoaded(true)}
+          onError={(e) => {
+            // If backend preview fails, show placeholder
+            const target = e.target as HTMLImageElement;
+            target.style.display = 'none';
+          }}
           loading="lazy"
         />
       ) : (
@@ -77,7 +89,6 @@ const LazyImage: React.FC<{ photo: Photo; className?: string }> = ({ photo, clas
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
           </svg>
           <p className="text-[10px] text-zinc-500 truncate w-full">{photo.name}</p>
-          <p className="text-[9px] text-zinc-600 mt-1">Link folder to view</p>
         </div>
       )}
     </div>

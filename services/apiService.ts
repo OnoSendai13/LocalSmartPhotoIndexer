@@ -227,3 +227,15 @@ export async function clearAllPhotos(): Promise<void> {
   const res = await fetch(`${API_BASE}/photos/all`, { method: 'DELETE' });
   if (!res.ok) throw new Error(`DELETE /photos/all failed: ${res.status}`);
 }
+
+// BUG FIX #4: Reset photos stuck in 'processing' state (called on app startup)
+export async function resetProcessingPhotos(): Promise<number> {
+  try {
+    const res = await fetch(`${API_BASE}/photos/queue/reset-processing`, { method: 'POST' });
+    if (!res.ok) return 0;
+    const data = await res.json();
+    return data.reset || 0;
+  } catch {
+    return 0;
+  }
+}

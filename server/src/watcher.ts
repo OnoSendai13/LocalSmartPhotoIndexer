@@ -21,7 +21,7 @@ function getMimeType(filename: string): string {
 
 function addPhotoSync(folderId: string, folderPath: string, fullPath: string): boolean {
   const db = getDb();
-  const name = fullPath.split(/[\\/\\]/).pop() || fullPath;
+  const name = fullPath.split(/[/\\]/).pop() || fullPath;
 
   const existing = db.prepare('SELECT id FROM photos WHERE folder_path = @fp AND name = @n').get({ fp: folderPath, n: name });
   if (existing) return false;

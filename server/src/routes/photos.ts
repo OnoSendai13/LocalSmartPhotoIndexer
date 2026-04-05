@@ -109,9 +109,15 @@ photosRouter.put('/photos/:id', async (c) => {
     updates.push('tags = @tags');
     params.tags = JSON.stringify(body.tags);
 
-    const fullPath = path.join(existing.folder_path, existing.name);
+    // BUG FIX #3: Use absolute path stored in row.path first; fall back to folder_path + name
+    let fullPath = existing.path;
+    if (!fullPath || !existsSync(fullPath)) {
+      fullPath = path.join(existing.folder_path, existing.name);
+    }
     if (existsSync(fullPath)) {
       void writeTagsToFile(fullPath, body.tags);
+    } else {
+      console.warn(`[EXIF] File not found for EXIF write: ${fullPath}`);
     }
   }
   if (body.status !== undefined) {
@@ -173,6 +179,16 @@ photosRouter.delete('/photos/:id', (c) => {
   const db = getDb();
   db.prepare('DELETE FROM photos WHERE id = @id').run({ id: c.req.param('id') });
   return c.json({ success: true });
+});
+
+// POST /api/photos/queue/reset-processing — reset 'processing' -> 'pending' on startup
+photosRouter.post('/photos/queue/reset-processing', (c) => {
+  const db = getDb();
+  const info = db.prepare(
+    "UPDATE photos SET status = 'pending', updated_at = unixepoch('now') WHERE status = 'processing'"
+  ).run();
+  console.log(`[STARTUP] Reset ${info.changes} 'processing' photos back to 'pending'`);
+  return c.json({ success: true, reset: info.changes });
 });
 
 // GET /api/photos/queue/pending
@@ -272,9 +288,10 @@ photosRouter.post('/photos/import', async (c) => {
   return c.json({ success: true, photosImported });
 });
 
-// DELETE /api/photos/all — clear all photos
+// DELETE /api/photos/all — clear all photos AND folders
 photosRouter.delete('/photos/all', (c) => {
   const db = getDb();
   const info = db.prepare('DELETE FROM photos').run();
+  db.prepare('DELETE FROM folders').run();
   return c.json({ success: true, deleted: info.changes });
 });
