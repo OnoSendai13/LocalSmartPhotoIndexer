@@ -27,6 +27,11 @@ function save(): void {
   }
 }
 
+/** Force an immediate flush of the in-memory DB to disk. Call after bulk operations. */
+export function saveDb(): void {
+  save();
+}
+
 // ─── Statement wrapper ───────────────────────────────────────────────────────
 
 class Stmt {
@@ -52,7 +57,9 @@ class Stmt {
     });
     this.db.run(mappedSql, values as import('sql.js').BindParameters[]);
     const changes = this.db.getRowsModified();
-    save();
+    // Only save to disk if we are NOT inside an explicit transaction.
+    // Inside a transaction, save() is called once at the end by transaction().
+    if (!_inTransaction) save();
     return { changes };
   }
 
@@ -88,18 +95,41 @@ class Database {
     return new Stmt(_db!, sql);
   }
 
+  /**
+   * Run a function inside an atomic SQL transaction, writing to disk exactly once.
+   * Use this for bulk operations (e.g. "clear all data") where multiple statements
+   * must succeed or fail together.
+   */
+  runTransaction(fn: () => void): void {
+    _inTransaction = true;
+    try {
+      _db!.run('BEGIN');
+      fn();
+      _db!.run('COMMIT');
+      save(); // single atomic flush after all statements complete
+    } catch (err) {
+      try { _db!.run('ROLLBACK'); } catch { /* ignore */ }
+      throw err;
+    } finally {
+      _inTransaction = false;
+    }
+  }
+
   transaction<T extends unknown[]>(fn: (items: T) => void): (items: T) => void {
     return (items: T) => {
-      // sql.js runs in autocommit mode; BEGIN/COMMIT are advisory-only in WASM.
-      // Run the statements, save on success, throw on failure.
+      // Suppress per-statement save() calls inside the transaction;
+      // write to disk exactly once at the end.
+      _inTransaction = true;
       try {
+        _db!.run('BEGIN');
         fn(items);
-        save();
+        _db!.run('COMMIT');
+        save(); // single atomic flush
       } catch (err) {
-        // Attempt rollback — will silently fail if no transaction was active
-        // (sql.js emits a warning but no exception for spurious ROLLBACK)
-        try { _db!.run('ROLLBACK'); } catch { /* no active transaction */ }
+        try { _db!.run('ROLLBACK'); } catch { /* ignore */ }
         throw err;
+      } finally {
+        _inTransaction = false;
       }
     };
   }
@@ -108,6 +138,9 @@ class Database {
     return _db?.getRowsModified() ?? 0;
   }
 }
+
+/** Set to true while a transaction() is running, to suppress per-statement save() calls. */
+let _inTransaction = false;
 
 let _wrapper: Database;
 

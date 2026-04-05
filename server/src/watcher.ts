@@ -89,6 +89,16 @@ export function stopAllWatchers() {
   if (periodicInterval) { clearInterval(periodicInterval); periodicInterval = null; }
 }
 
+/**
+ * Stop all watchers AND the periodic interval, then clear the in-memory map.
+ * Call this after a "Clear All Data" operation so chokidar cannot re-insert
+ * photos into the freshly-emptied database.
+ */
+export function resetWatchers() {
+  stopAllWatchers();
+  watchers.clear();
+}
+
 export function startAllWatchers() {
   const folders = getDb().prepare('SELECT * FROM folders').all() as { id: string; path: string }[];
   for (const f of folders) startWatching(f.id, f.path);
