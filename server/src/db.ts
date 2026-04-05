@@ -53,22 +53,22 @@ export function execAndSave(sql: string): void {
 
 /**
  * Nuclear clear: wipe ALL data from the in-memory DB, flush an empty DB to
- * disk, then FREEZE all further save() calls so in-flight watcher callbacks
- * cannot overwrite the empty file.
- *
- * The server process should be restarted (or the page reloaded, causing the
- * frontend to reconnect) after this call.
+ * disk, reinitialise the schema (empty tables), then unfreeze so the server
+ * can keep running normally — no process restart needed.
  */
 export function nukeDb(): void {
   if (!_db) throw new Error('Database not initialized');
-  // Step 1: delete everything from in-memory DB
-  _db.run('DELETE FROM photos; DELETE FROM folders;');
-  // Step 2: write the now-empty DB to disk
+  // Step 1: freeze immediately so no in-flight save() can race us
+  _frozen = true;
+  // Step 2: wipe both tables
+  _db.run('DELETE FROM photos');
+  _db.run('DELETE FROM folders');
+  // Step 3: write the empty DB to disk atomically
   const data = _db.export();
   writeFileSync(dbPath, Buffer.from(data));
-  // Step 3: freeze — no further save() call can overwrite the clean disk file
-  _frozen = true;
-  console.log('[NUKE] DB wiped and frozen. Restart the server to resume normal operation.');
+  // Step 4: unfreeze — server keeps running with clean state
+  _frozen = false;
+  console.log('[NUKE] ✅ DB wiped and saved. Server continues with empty DB.');
 }
 
 // ─── Statement wrapper ───────────────────────────────────────────────────────

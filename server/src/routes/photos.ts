@@ -124,6 +124,11 @@ photosRouter.put('/photos/:id', async (c) => {
       console.warn(`[EXIF] File not found for EXIF write: ${fullPath}`);
     }
   }
+  // Accept thumbnail update — only overwrite if a non-empty value is provided
+  if (body.thumbnail) {
+    updates.push('thumbnail = @thumbnail');
+    params.thumbnail = body.thumbnail;
+  }
   if (body.status !== undefined) {
     updates.push('status = @status');
     params.status = body.status;
@@ -158,7 +163,9 @@ photosRouter.post('/photos', async (c) => {
     INSERT OR REPLACE INTO photos
       (id, name, path, folder_path, size, last_modified, mime_type, tags, status, thumbnail, indexed_at, error_message, created_at, updated_at)
     VALUES
-      (@id, @name, @path, @folderPath, @size, @lastModified, @mimeType, @tags, @status, @thumbnail, @indexedAt, @errorMessage,
+      (@id, @name, @path, @folderPath, @size, @lastModified, @mimeType, @tags, @status,
+       COALESCE(@thumbnail, (SELECT thumbnail FROM photos WHERE id=@id)),
+       @indexedAt, @errorMessage,
        COALESCE((SELECT created_at FROM photos WHERE id=@id), unixepoch('now')),
        unixepoch('now'))
   `);
@@ -315,31 +322,15 @@ photosRouter.delete('/photos/all', (c) => {
   try { resetWatchers(); } catch { /* non-fatal */ }
 
   try {
-    // 2. nukeDb(): deletes everything in-memory, writes the empty DB to disk,
-    //    then FREEZES save() so any in-flight watcher callback that happens to
-    //    fire before Node.js fully processes the close() cannot overwrite the
-    //    freshly-emptied file with stale data.
+    // 2. nukeDb(): freezes save(), deletes all rows in memory, writes empty
+    //    DB to disk, then unfreezes — server keeps running with clean state.
     nukeDb();
   } catch (err) {
-    console.error('[CLEAR] nukeDb failed — falling back to execAndSave:', err);
-    try {
-      execAndSave('DELETE FROM photos; DELETE FROM folders;');
-    } catch (err2) {
-      console.error('[CLEAR] fallback also failed:', err2);
-      return c.json({ error: 'Failed to clear data' }, 500);
-    }
+    console.error('[CLEAR] nukeDb failed:', err);
+    return c.json({ error: 'Failed to clear data' }, 500);
   }
 
-  console.log('[CLEAR] ✅ All photos and folders deleted and flushed to disk. Restarting server process...');
-
-  // 3. Schedule a process exit so tsx/nodemon restarts the server automatically.
-  //    This guarantees a clean in-memory state (no frozen DB, no stale watchers).
-  //    The timeout gives the HTTP response time to be sent before exit.
-  setTimeout(() => {
-    console.log('[CLEAR] Server exiting for clean restart...');
-    process.exit(0);
-  }, 300);
-
+  console.log('[CLEAR] ✅ All photos and folders deleted. DB is empty and saved.');
   return c.json({ success: true });
 });
 
