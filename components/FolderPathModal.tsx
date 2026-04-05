@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { probeFolder, FolderProbeResult } from '../services/apiService';
 
 interface FolderPathModalProps {
   /** Name of the folder as seen by the browser (webkitRelativePath root) */
@@ -25,12 +26,10 @@ function toWslPath(winPath: string): string | null {
 /**
  * Modal dialog asking the user for the absolute server-side path of a folder.
  *
- * Why is this necessary?
- * The browser's file picker only exposes relative paths (webkitRelativePath).
- * The backend needs the absolute disk path to:
- *   - Serve photo previews via /api/photos/:id/preview
- *   - Write AI-generated tags to EXIF/XMP metadata
- *   - Persist paths across sessions (no re-linking needed)
+ * Features:
+ * - Auto-fills with an OS-aware suggested path from the backend
+ * - WSL hint: detects Windows paths and offers WSL equivalent
+ * - Path probe: checks if the server can find the folder and shows nearby entries
  */
 export const FolderPathModal: React.FC<FolderPathModalProps> = ({
   folderName,
@@ -38,6 +37,8 @@ export const FolderPathModal: React.FC<FolderPathModalProps> = ({
   onConfirm,
 }) => {
   const [value, setValue] = useState(suggestedPath);
+  const [probing, setProbing] = useState(false);
+  const [probe, setProbe] = useState<FolderProbeResult | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Focus & select all on open so the user can just type the correct path
@@ -46,12 +47,18 @@ export const FolderPathModal: React.FC<FolderPathModalProps> = ({
       inputRef.current.focus();
       inputRef.current.select();
     }
-    // Update value when suggestedPath changes (async system info load)
     setValue(suggestedPath);
+    setProbe(null);
   }, [suggestedPath]);
 
+  // Reset probe result when user changes input
+  const handleChange = (v: string) => {
+    setValue(v);
+    setProbe(null);
+  };
+
   const handleConfirm = () => {
-    const trimmed = value.trim().replace(/[/\\]+$/, ''); // remove trailing slashes
+    const trimmed = value.trim().replace(/[/\\]+$/, '');
     if (!trimmed) return;
     onConfirm(trimmed);
   };
@@ -61,8 +68,37 @@ export const FolderPathModal: React.FC<FolderPathModalProps> = ({
     if (e.key === 'Escape') onConfirm(null);
   };
 
+  const handleProbe = async () => {
+    const trimmed = value.trim().replace(/[/\\]+$/, '');
+    if (!trimmed) return;
+    setProbing(true);
+    setProbe(null);
+    try {
+      const result = await probeFolder(trimmed);
+      setProbe(result);
+    } catch (e) {
+      setProbe({
+        inputPath: trimmed,
+        exists: false,
+        platform: '?',
+        homedir: '?',
+        cwd: '?',
+        parentPath: '?',
+        parentEntries: [],
+      });
+    } finally {
+      setProbing(false);
+    }
+  };
+
   // Detect if the current input looks like a Windows path and compute WSL equivalent
   const wslEquivalent = toWslPath(value);
+
+  // Fuzzy match: find entries in parent dir that look similar to the folder name
+  const folderNameLower = value.trim().replace(/[/\\]+$/, '').split(/[/\\]/).pop()?.toLowerCase() ?? '';
+  const similarEntries = probe?.parentEntries.filter(e =>
+    e.toLowerCase().includes(folderNameLower) || folderNameLower.includes(e.toLowerCase())
+  ) ?? [];
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
@@ -91,38 +127,99 @@ export const FolderPathModal: React.FC<FolderPathModalProps> = ({
             <p>• <span className="text-zinc-200">Reprise après crash</span> — les chemins sont persistés en base</p>
           </div>
 
-          {/* Input */}
-          <div className="space-y-1">
+          {/* Input + Probe button */}
+          <div className="space-y-2">
             <label className="text-xs font-medium text-zinc-400">Chemin absolu (côté serveur)</label>
-            <input
-              ref={inputRef}
-              type="text"
-              value={value}
-              onChange={e => setValue(e.target.value)}
-              onKeyDown={handleKeyDown}
-              className="w-full bg-zinc-950 border border-zinc-700 focus:border-orange-500 rounded-lg px-3 py-2.5 text-sm text-white font-mono focus:outline-none transition-colors"
-              placeholder="/chemin/vers/votre/dossier"
-              spellCheck={false}
-              autoComplete="off"
-            />
+            <div className="flex gap-2">
+              <input
+                ref={inputRef}
+                type="text"
+                value={value}
+                onChange={e => handleChange(e.target.value)}
+                onKeyDown={handleKeyDown}
+                className="flex-1 bg-zinc-950 border border-zinc-700 focus:border-orange-500 rounded-lg px-3 py-2.5 text-sm text-white font-mono focus:outline-none transition-colors"
+                placeholder="/chemin/vers/votre/dossier"
+                spellCheck={false}
+                autoComplete="off"
+              />
+              <button
+                type="button"
+                onClick={handleProbe}
+                disabled={probing || !value.trim()}
+                title="Vérifier si le serveur trouve ce dossier"
+                className="px-3 py-2.5 rounded-lg text-xs font-medium bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed text-zinc-200 transition-colors whitespace-nowrap"
+              >
+                {probing ? '…' : '🔍 Tester'}
+              </button>
+            </div>
           </div>
 
+          {/* Probe result */}
+          {probe && (
+            <div className={`rounded-lg p-3 text-xs space-y-1.5 border ${
+              probe.exists
+                ? 'bg-green-900/30 border-green-700/50'
+                : 'bg-red-900/30 border-red-700/50'
+            }`}>
+              <p className={`font-medium ${probe.exists ? 'text-green-300' : 'text-red-300'}`}>
+                {probe.exists ? '✅ Chemin trouvé par le serveur !' : '❌ Chemin introuvable côté serveur'}
+              </p>
+              <p className="text-zinc-400">
+                Serveur : <span className="text-zinc-200 font-mono">{probe.platform}</span>
+                {' · '}Home : <span className="text-zinc-200 font-mono">{probe.homedir}</span>
+              </p>
+              {!probe.exists && probe.parentEntries.length > 0 && (
+                <div>
+                  <p className="text-zinc-400 mb-1">
+                    Contenu de <span className="font-mono text-zinc-300">{probe.parentPath}</span> :
+                  </p>
+                  <div className="max-h-28 overflow-y-auto space-y-0.5">
+                    {probe.parentEntries.map(entry => (
+                      <button
+                        key={entry}
+                        type="button"
+                        onClick={() => {
+                          const sep = probe.platform === 'win32' ? '\\' : '/';
+                          handleChange(`${probe.parentPath}${sep}${entry}`);
+                        }}
+                        className={`block w-full text-left font-mono px-2 py-0.5 rounded transition-colors ${
+                          similarEntries.includes(entry)
+                            ? 'text-yellow-200 bg-yellow-900/40 hover:bg-yellow-800/40 font-semibold'
+                            : 'text-zinc-300 hover:bg-zinc-700/50'
+                        }`}
+                      >
+                        {similarEntries.includes(entry) ? '→ ' : '   '}{entry}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-zinc-500 mt-1">Cliquez sur un dossier pour l'utiliser.</p>
+                </div>
+              )}
+              {!probe.exists && probe.parentEntries.length === 0 && probe.parentPath !== '?' && (
+                <p className="text-zinc-400">
+                  Dossier parent <span className="font-mono text-zinc-300">{probe.parentPath}</span> introuvable non plus.
+                  Vérifiez l'intégralité du chemin.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* WSL hint — shown when input looks like a Windows path */}
-          {wslEquivalent && (
+          {wslEquivalent && !probe && (
             <div className="bg-blue-900/30 border border-blue-700/50 rounded-lg p-3 text-xs space-y-1">
               <p className="text-blue-200 font-medium">⚠️ Chemin Windows détecté</p>
               <p className="text-blue-300">
-                Si le serveur tourne dans WSL2, utilisez plutôt :
+                Si le serveur tourne dans <strong>WSL2</strong>, utilisez plutôt :
               </p>
               <button
                 type="button"
-                onClick={() => setValue(wslEquivalent)}
+                onClick={() => handleChange(wslEquivalent)}
                 className="block w-full text-left font-mono text-blue-100 bg-blue-950/60 hover:bg-blue-900/60 border border-blue-700/40 rounded px-2 py-1 transition-colors mt-1"
                 title="Cliquer pour utiliser ce chemin WSL"
               >
                 {wslEquivalent}
               </button>
-              <p className="text-blue-400 text-[10px]">Cliquez sur le chemin ci-dessus pour l'utiliser.</p>
+              <p className="text-blue-400 text-[10px]">Cliquez pour utiliser. Testez ensuite avec "🔍 Tester".</p>
             </div>
           )}
 
