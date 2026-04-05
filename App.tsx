@@ -323,92 +323,123 @@ const App: React.FC = () => {
     }
   };
 
-  // Queue Processing Logic - uses ref to always get latest photos
+  // ─── Queue Processing ─────────────────────────────────────────────────────
+  // Uses a ref to always access the latest photo state without stale closures.
   const photosRef = useRef<Photo[]>([]);
-  
-  // Keep photosRef in sync with photos state
+  useEffect(() => { photosRef.current = photos; }, [photos]);
+
+  /**
+   * How many photos to analyse in parallel.
+   * - Ollama (local GPU): 2 workers saturates VRAM without thrashing.
+   * - Cloud APIs (OpenRouter / Gemini): 3 workers (rate-limit permitting).
+   */
+  const concurrencyRef = useRef(2);
   useEffect(() => {
-    photosRef.current = photos;
-  }, [photos]);
+    concurrencyRef.current = settings.provider === 'ollama' ? 2 : 3;
+  }, [settings.provider]);
 
-  const processQueueWithPhotos = async (initialPhotos?: Photo[]) => {
-    // Use provided photos or get from ref
-    if (initialPhotos) {
-      photosRef.current = initialPhotos;
-    }
-    
-    if (processingQueue.current.length === 0) {
-      setIsProcessing(false);
-      setCurrentProcessingPhoto('');
-      console.log('✅ Processing complete!');
-      refreshFolders();
-      return;
-    }
+  /** Number of active parallel workers */
+  const activeWorkers = useRef(0);
 
-    const photoId = processingQueue.current.shift();
-    if (!photoId) return;
-
-    // Get photo from ref (always current)
+  /**
+   * Process one photo and then pull the next one from the queue.
+   * Multiple instances of this function run concurrently (up to CONCURRENCY).
+   */
+  const processOnePhoto = async (photoId: string) => {
     const photo = photosRef.current.find(p => p.id === photoId);
     if (!photo) {
       console.log(`⚠️ Photo ${photoId} not found, skipping...`);
-      processQueueWithPhotos(); 
       return;
     }
 
-    console.log(`🔍 Processing: ${photo.name}`);
+    console.log(`🔍 [worker] Processing: ${photo.name}`);
     setPhotos(prev => prev.map(p => p.id === photoId ? { ...p, status: 'processing' } : p));
     setCurrentProcessingPhoto(photo.name);
 
     try {
-      console.log(`📤 Sending to AI: ${photo.name}`);
-      const base64Data = await fileToBase64(photo.file);
-      const tags = await analyzeImage(base64Data, photo.file.type);
-      console.log(`✅ Tags received for ${photo.name}:`, tags);
-      
-      const updatedPhoto = { 
-        ...photo, 
-        tags: [...new Set([...photo.tags, ...tags])], // Merge and dedupe tags
+      const base64Data = await fileToBase64(photo.file!);
+      const tags = await analyzeImage(base64Data, photo.file!.type);
+      console.log(`✅ Tags for ${photo.name}:`, tags);
+
+      const updatedPhoto = {
+        ...photo,
+        tags: [...new Set([...photo.tags, ...tags])],
         status: 'done' as const,
         indexedAt: Date.now(),
       };
-      
+
       setPhotos(prev => prev.map(p => p.id === photoId ? updatedPhoto : p));
-      
-      // BUG FIX #1+3: Use absoluteFolderPath for backend storage so EXIF and preview work correctly
-      // The 'path' field sent to backend must be the ABSOLUTE path to the file
+
+      // Resolve absolute path for backend (EXIF write + preview)
       const absoluteFolderPath = updatedPhoto.absoluteFolderPath || updatedPhoto.folderPath || '';
       const absoluteFilePath = absoluteFolderPath
-        ? (updatedPhoto.path && updatedPhoto.path.startsWith('/') 
-            ? updatedPhoto.path  // already absolute
+        ? (updatedPhoto.path?.startsWith('/')
+            ? updatedPhoto.path
             : absoluteFolderPath + '/' + (updatedPhoto.path?.split('/').pop() || updatedPhoto.name))
         : (updatedPhoto.path || '');
 
       const storedPhoto: StoredPhoto = {
         id: updatedPhoto.id,
         name: updatedPhoto.name,
-        path: absoluteFilePath,          // ABSOLUTE path for EXIF write & preview
-        folderPath: absoluteFolderPath,  // ABSOLUTE folder path
-        size: updatedPhoto.file.size,
-        lastModified: updatedPhoto.file.lastModified,
-        mimeType: updatedPhoto.file.type,
+        path: absoluteFilePath,
+        folderPath: absoluteFolderPath,
+        size: updatedPhoto.file!.size,
+        lastModified: updatedPhoto.file!.lastModified,
+        mimeType: updatedPhoto.file!.type,
         tags: updatedPhoto.tags,
         status: 'done',
         indexedAt: Date.now(),
       };
+      // savePhoto now uses INSERT … ON CONFLICT DO UPDATE, so tags & status are always persisted
       await savePhoto(storedPhoto);
-      console.log(`💾 Saved to DB: ${photo.name} (path: ${absoluteFilePath})`);
-      
+      console.log(`💾 Saved: ${photo.name} → ${absoluteFilePath}`);
+
     } catch (error) {
-      console.error(`❌ Failed to process ${photo.name}`, error);
-      setPhotos(prev => prev.map(p => p.id === photoId ? { 
-        ...p, 
-        status: 'error',
-        errorMessage: error instanceof Error ? error.message : 'Unknown error'
-      } : p));
-    } finally {
-      // Process next item
-      processQueueWithPhotos(); 
+      console.error(`❌ Failed: ${photo.name}`, error);
+      setPhotos(prev => prev.map(p => p.id === photoId
+        ? { ...p, status: 'error', errorMessage: error instanceof Error ? error.message : 'Unknown error' }
+        : p));
+    }
+  };
+
+  /**
+   * Drain the queue, spawning up to CONCURRENCY parallel workers.
+   * Safe to call multiple times — extra calls become no-ops when workers
+   * are already at the concurrency cap.
+   */
+  const processQueueWithPhotos = async (initialPhotos?: Photo[]) => {
+    if (initialPhotos) photosRef.current = initialPhotos;
+
+    // Drain loop: each worker keeps pulling until the queue is empty
+    const runWorker = async () => {
+      activeWorkers.current += 1;
+      try {
+        while (processingQueue.current.length > 0) {
+          const photoId = processingQueue.current.shift();
+          if (!photoId) break;
+          await processOnePhoto(photoId);
+        }
+      } finally {
+        activeWorkers.current -= 1;
+        if (activeWorkers.current === 0) {
+          setIsProcessing(false);
+          setCurrentProcessingPhoto('');
+          console.log('✅ All processing complete!');
+          refreshFolders();
+        }
+      }
+    };
+
+    // How many new workers can we spawn?
+    const toSpawn = Math.min(
+      concurrencyRef.current - activeWorkers.current,
+      processingQueue.current.length,
+    );
+    if (toSpawn <= 0) return;
+
+    setIsProcessing(true);
+    for (let i = 0; i < toSpawn; i++) {
+      runWorker(); // intentionally not awaited — fire and forget
     }
   };
 
