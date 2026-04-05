@@ -20,7 +20,15 @@ const dbPath = path.join(dataDir, 'photo-index.db');
 
 let _db: import('sql.js').Database | null = null;
 
+/**
+ * When true, save() is a no-op.  Set during nukeDb() so that any in-flight
+ * watcher callback that calls save() after the clear does NOT overwrite the
+ * freshly-emptied on-disk file with stale data.
+ */
+let _frozen = false;
+
 function save(): void {
+  if (_frozen) return;   // <-- key guard: block stale writes after a clear
   if (_db) {
     const data = _db.export();
     writeFileSync(dbPath, Buffer.from(data));
@@ -41,6 +49,26 @@ export function execAndSave(sql: string): void {
   if (!_db) throw new Error('Database not initialized');
   _db.run(sql);
   save();
+}
+
+/**
+ * Nuclear clear: wipe ALL data from the in-memory DB, flush an empty DB to
+ * disk, then FREEZE all further save() calls so in-flight watcher callbacks
+ * cannot overwrite the empty file.
+ *
+ * The server process should be restarted (or the page reloaded, causing the
+ * frontend to reconnect) after this call.
+ */
+export function nukeDb(): void {
+  if (!_db) throw new Error('Database not initialized');
+  // Step 1: delete everything from in-memory DB
+  _db.run('DELETE FROM photos; DELETE FROM folders;');
+  // Step 2: write the now-empty DB to disk
+  const data = _db.export();
+  writeFileSync(dbPath, Buffer.from(data));
+  // Step 3: freeze — no further save() call can overwrite the clean disk file
+  _frozen = true;
+  console.log('[NUKE] DB wiped and frozen. Restart the server to resume normal operation.');
 }
 
 // ─── Statement wrapper ───────────────────────────────────────────────────────
