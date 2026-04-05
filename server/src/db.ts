@@ -7,7 +7,7 @@
  *   getDb().transaction(fn)(items)
  */
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -52,23 +52,51 @@ export function execAndSave(sql: string): void {
 }
 
 /**
- * Nuclear clear: wipe ALL data from the in-memory DB, flush an empty DB to
- * disk, reinitialise the schema (empty tables), then unfreeze so the server
- * can keep running normally — no process restart needed.
+ * Nuclear clear: the ONLY reliable way to empty a sql.js database.
+ *
+ * Strategy: delete the .db file from disk, close the old in-memory DB,
+ * create a brand-new empty SQL.Database(), re-apply the schema, and save
+ * the fresh empty file.  After this call the server keeps running normally
+ * with a completely clean in-memory + on-disk state.
+ *
+ * Why not just DELETE FROM photos / DELETE FROM folders?
+ * Because sql.js is async-I/O and any in-flight Stmt.run() that fires
+ * between our DELETE and our writeFileSync can call save() and overwrite
+ * the file with stale data.  Replacing _db entirely prevents that race.
  */
-export function nukeDb(): void {
+export async function nukeDb(): Promise<void> {
   if (!_db) throw new Error('Database not initialized');
-  // Step 1: freeze immediately so no in-flight save() can race us
+
+  // Step 1: freeze — stop ALL save() calls immediately
   _frozen = true;
-  // Step 2: wipe both tables
-  _db.run('DELETE FROM photos');
-  _db.run('DELETE FROM folders');
-  // Step 3: write the empty DB to disk atomically
-  const data = _db.export();
-  writeFileSync(dbPath, Buffer.from(data));
-  // Step 4: unfreeze — server keeps running with clean state
-  _frozen = false;
-  console.log('[NUKE] ✅ DB wiped and saved. Server continues with empty DB.');
+
+  try {
+    // Step 2: delete the file on disk so there is nothing to restore from
+    if (existsSync(dbPath)) {
+      unlinkSync(dbPath);
+      console.log('[NUKE] Deleted', dbPath);
+    }
+
+    // Step 3: close the old in-memory DB
+    _db.close();
+    _db = null;
+
+    // Step 4: create a fresh empty in-memory DB
+    const initSqlJs = (await import('sql.js')).default;
+    const wasmBinary = readFileSync(wasmPath);
+    const SQL = await initSqlJs({ wasmBinary });
+    _db = new SQL.Database();
+    _db.run('PRAGMA foreign_keys = ON');
+    _initSchema(_db);
+
+    // Step 5: write the clean empty DB to disk
+    const data = _db.export();
+    writeFileSync(dbPath, Buffer.from(data));
+    console.log('[NUKE] ✅ Fresh empty DB written to disk.');
+  } finally {
+    // Step 6: always unfreeze so the server stays functional
+    _frozen = false;
+  }
 }
 
 // ─── Statement wrapper ───────────────────────────────────────────────────────

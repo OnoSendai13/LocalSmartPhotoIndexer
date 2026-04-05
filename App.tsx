@@ -155,17 +155,13 @@ const App: React.FC = () => {
           console.log(`📚 Loaded ${savedPhotos.length} photos from DB (${savedPhotos.filter(p => p.status === 'done').length} done, ${savedPhotos.filter(p => p.status === 'pending').length} pending)`);
 
           const loadedPhotos: Photo[] = savedPhotos.map(sp => {
-            // If the stored thumbnail is tiny (old 96px records, base64 < ~4KB),
-            // discard it and fall back to the backend /preview endpoint instead.
-            // New thumbnails are 480px JPEG and will be ≥ 8KB in base64.
-            const thumb = sp.thumbnail && sp.thumbnail.length > 4000 ? sp.thumbnail : '';
+            // Use the stored thumbnail as-is — any non-empty string is valid.
+            // The old "length > 4000" guard was wrong: a small/simple image can
+            // legitimately produce a short base64 JPEG even at 480px.
+            const thumb = sp.thumbnail || '';
             return {
               id: sp.id,
-              // Placeholder File — size=0 signals that the real file isn't loaded yet.
-              // LazyImage detects this and falls back to thumbnail or /api/photos/:id/preview.
-              file: new File([], sp.name),
-              // Use stored thumbnail as preview URL so the grid shows images immediately
-              // even if the backend cannot reach the file on disk.
+              file: new File([], sp.name), // size=0 → LazyImage uses thumbnail or /preview
               previewUrl: thumb,
               name: sp.name,
               path: sp.path,
