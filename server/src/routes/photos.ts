@@ -316,3 +316,108 @@ photosRouter.delete('/photos/all', (c) => {
   db.prepare('DELETE FROM folders').run();
   return c.json({ success: true, deleted: info.changes });
 });
+
+// POST /api/photos/sync-exif
+// Reads EXIF/IPTC/XMP tags from each photo file and:
+//   1. Injects them into the DB for photos that have no tags yet (status='done' or status='pending' with no tags)
+//   2. Re-writes the EXIF metadata for photos that have DB tags but no file metadata
+// Returns per-photo results so the frontend can show a summary.
+photosRouter.post('/photos/sync-exif', async (c) => {
+  const db = getDb();
+  const { readTagsFromFile, writeTagsToFile } = await import('../exif.js');
+  const { existsSync } = await import('fs');
+
+  const body = await c.req.json<{ mode?: 'read' | 'write' | 'both'; folderPath?: string }>().catch(() => ({ mode: undefined, folderPath: undefined }));
+  const mode = (body as { mode?: string }).mode ?? 'both';
+  const folderPath = (body as { folderPath?: string }).folderPath;
+
+  // Fetch all photos that have a real absolute path
+  let sql = "SELECT * FROM photos WHERE path != '' AND path IS NOT NULL";
+  const params: Record<string, unknown> = {};
+  if (folderPath) {
+    sql += ' AND folder_path = @folderPath';
+    params.folderPath = folderPath;
+  }
+  const rows = db.prepare(sql).all(params) as PhotoRow[];
+
+  let injected = 0;   // tags read from file → saved to DB
+  let written = 0;    // tags from DB → written to file
+  let skipped = 0;
+  let missing = 0;
+
+  const updateTags = db.prepare(`
+    UPDATE photos SET
+      tags = @tags,
+      status = 'done',
+      indexed_at = unixepoch('now'),
+      updated_at = unixepoch('now')
+    WHERE id = @id
+  `);
+
+  for (const row of rows) {
+    const filePath = row.path;
+    if (!existsSync(filePath)) { missing++; continue; }
+
+    const dbTags: string[] = JSON.parse(row.tags || '[]');
+    const hasDbTags = dbTags.length > 0;
+
+    // READ mode: inject file metadata tags into DB when DB has no tags
+    if ((mode === 'read' || mode === 'both') && !hasDbTags) {
+      const fileTags = await readTagsFromFile(filePath);
+      if (fileTags.length > 0) {
+        updateTags.run({ id: row.id, tags: JSON.stringify(fileTags) });
+        injected++;
+        console.log(`📥 [sync-exif] Injected from file: ${row.name} → [${fileTags.join(', ')}]`);
+        continue; // no need to also write back
+      }
+    }
+
+    // WRITE mode: push DB tags to file when file has no metadata tags
+    if ((mode === 'write' || mode === 'both') && hasDbTags) {
+      const fileTags = await readTagsFromFile(filePath);
+      if (fileTags.length === 0) {
+        await writeTagsToFile(filePath, dbTags);
+        written++;
+        console.log(`📤 [sync-exif] Written to file: ${row.name} → [${dbTags.join(', ')}]`);
+      } else {
+        skipped++;
+      }
+    } else if (!hasDbTags) {
+      skipped++;
+    }
+  }
+
+  console.log(`[sync-exif] Done: ${injected} injected, ${written} written, ${skipped} skipped, ${missing} missing`);
+  return c.json({ success: true, injected, written, skipped, missing, total: rows.length });
+});
+
+// POST /api/photos/rewrite-exif
+// Force-rewrites EXIF tags for ALL photos that have tags in DB, regardless of what's on disk.
+// Useful after a path migration or first-time setup where files had no metadata.
+photosRouter.post('/photos/rewrite-exif', async (c) => {
+  const db = getDb();
+  const { writeTagsToFile } = await import('../exif.js');
+  const { existsSync } = await import('fs');
+
+  const body2 = await c.req.json<{ folderPath?: string }>().catch(() => ({ folderPath: undefined }));
+  const folderPath = (body2 as { folderPath?: string }).folderPath;
+
+  let sql = "SELECT * FROM photos WHERE tags != '[]' AND tags IS NOT NULL AND path != ''";
+  const params: Record<string, unknown> = {};
+  if (folderPath) { sql += ' AND folder_path = @folderPath'; params.folderPath = folderPath; }
+
+  const rows = db.prepare(sql).all(params) as PhotoRow[];
+  let written = 0; let missing = 0;
+
+  for (const row of rows) {
+    if (!existsSync(row.path)) { missing++; continue; }
+    const tags: string[] = JSON.parse(row.tags || '[]');
+    if (tags.length > 0) {
+      await writeTagsToFile(row.path, tags);
+      written++;
+    }
+  }
+
+  console.log(`[rewrite-exif] ${written} files updated, ${missing} missing`);
+  return c.json({ success: true, written, missing, total: rows.length });
+});

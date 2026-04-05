@@ -101,6 +101,49 @@ export async function updatePhotoStatus(
   if (!res.ok) throw new Error(`PUT /photos/${id} (status) failed: ${res.status}`);
 }
 
+// ─── EXIF sync ───────────────────────────────────────────────────────────────
+
+export interface ExifSyncResult {
+  success: boolean;
+  injected: number;   // tags read from file and saved to DB
+  written: number;    // DB tags written to file metadata
+  skipped: number;
+  missing: number;    // files not found on disk
+  total: number;
+}
+
+/**
+ * Sync EXIF metadata between files and the DB.
+ * mode='read'  → read file metadata → inject into DB (for untagged photos)
+ * mode='write' → push DB tags → write to file metadata (for photos with DB tags but no file metadata)
+ * mode='both'  → do both (default)
+ */
+export async function syncExifTags(
+  mode: 'read' | 'write' | 'both' = 'both',
+  folderPath?: string,
+): Promise<ExifSyncResult> {
+  const res = await fetch(`${API_BASE}/photos/sync-exif`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode, folderPath }),
+  });
+  if (!res.ok) throw new Error(`POST /photos/sync-exif failed: ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Force-rewrite EXIF metadata for all photos that have tags in the DB.
+ */
+export async function rewriteExifTags(folderPath?: string): Promise<{ written: number; missing: number; total: number }> {
+  const res = await fetch(`${API_BASE}/photos/rewrite-exif`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ folderPath }),
+  });
+  if (!res.ok) throw new Error(`POST /photos/rewrite-exif failed: ${res.status}`);
+  return res.json();
+}
+
 // ─── Stats ──────────────────────────────────────────────────────────────────
 
 export interface Stats {

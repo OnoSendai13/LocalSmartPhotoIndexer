@@ -23,6 +23,8 @@ import {
   updatePhotoTags as apiUpdatePhotoTags,
   resetProcessingPhotos,
   getSystemInfo,
+  syncExifTags,
+  rewriteExifTags,
   SystemInfo,
   Photo as StoredPhoto,
 } from './services/apiService';
@@ -126,7 +128,7 @@ const App: React.FC = () => {
           });
         }
 
-        // BUG FIX #4: Reset any photos stuck in 'processing' on startup
+        // Reset any photos stuck in 'processing' on startup (crash recovery)
         const resetCount = await resetProcessingPhotos();
         if (resetCount > 0) {
           console.log(`🔄 Reset ${resetCount} interrupted photos back to 'pending'`);
@@ -140,27 +142,46 @@ const App: React.FC = () => {
         // Load registered folders
         await refreshFolders();
 
-        // Load saved photos from backend DB
+        // ─── Load ALL photos from backend DB ─────────────────────────────────
+        // All photos (done + pending + error) are loaded and displayed immediately.
+        // • 'done'    → shown with their tags and backend preview URL
+        // • 'pending' → shown as grey placeholders; they will be re-queued below
+        //               once the AI connection is confirmed
+        // • 'error'   → shown with error indicator
         const savedPhotos = await getAllPhotos();
-        let loadedPhotos: Photo[] = [];
-        
+
         if (savedPhotos.length > 0) {
-          console.log(`📚 Loading ${savedPhotos.length} indexed photos from database`);
-          // Convert stored photos to app photos (without File objects initially)
-          // BUG FIX #1+2: Use sp.path (absolute) as absoluteFolderPath context
-          loadedPhotos = savedPhotos.map(sp => ({
+          console.log(`📚 Loaded ${savedPhotos.length} photos from DB (${savedPhotos.filter(p => p.status === 'done').length} done, ${savedPhotos.filter(p => p.status === 'pending').length} pending)`);
+
+          const loadedPhotos: Photo[] = savedPhotos.map(sp => ({
             id: sp.id,
-            file: new File([], sp.name), // Placeholder - will be replaced if folder is connected
-            previewUrl: '', // Empty = will use backend /api/photos/:id/preview
+            // Placeholder File — size=0 signals that the real file isn't loaded yet.
+            // LazyImage detects this and falls back to /api/photos/:id/preview.
+            file: new File([], sp.name),
+            previewUrl: '',
             name: sp.name,
-            path: sp.path,                       // Absolute path stored by backend
-            folderPath: sp.folderPath,            // Absolute folder path from backend
-            absoluteFolderPath: sp.folderPath,   // Same: backend stores absolute paths
+            path: sp.path,
+            folderPath: sp.folderPath,
+            absoluteFolderPath: sp.folderPath,
             tags: sp.tags,
             status: sp.status,
             indexedAt: sp.indexedAt,
           }));
+
           setPhotos(loadedPhotos);
+
+          // Re-queue photos that were never indexed (pending) so they are processed
+          // as soon as the AI connection becomes ready.
+          // NOTE: we cannot call processQueueWithPhotos() yet because the connection
+          // check hasn't finished. The queue will be drained by the useEffect below
+          // that watches `connectionStatus`.
+          const pendingIds = savedPhotos
+            .filter(p => p.status === 'pending')
+            .map(p => p.id);
+          if (pendingIds.length > 0) {
+            processingQueue.current.push(...pendingIds);
+            console.log(`⏳ ${pendingIds.length} pending photos queued — will process once AI connection is ready`);
+          }
         }
         
         // Try to restore File System Access (Chrome/Edge only)
@@ -199,6 +220,25 @@ const App: React.FC = () => {
     loadData();
     checkConnection();
   }, []);
+
+  // ── Auto-resume pending photos once AI connection is confirmed ─────────────
+  // When the app starts with pending photos in the queue AND the connection is
+  // established, kick off the parallel workers automatically.
+  // We use a ref to avoid triggering on every re-render.
+  const hasAutoResumed = useRef(false);
+  useEffect(() => {
+    if (
+      connectionStatus === 'connected' &&
+      !isProcessing &&
+      processingQueue.current.length > 0 &&
+      !hasAutoResumed.current
+    ) {
+      hasAutoResumed.current = true;
+      console.log(`▶️ Auto-resuming ${processingQueue.current.length} pending photos...`);
+      setIsProcessing(true);
+      setTimeout(() => processQueueWithPhotos(), 0);
+    }
+  }, [connectionStatus]);
 
   // Check connection when settings change
   useEffect(() => {
@@ -344,6 +384,11 @@ const App: React.FC = () => {
   /**
    * Process one photo and then pull the next one from the queue.
    * Multiple instances of this function run concurrently (up to CONCURRENCY).
+   *
+   * Handles two cases:
+   * A) Fresh photo with a real File blob  → encode via canvas/FileReader
+   * B) Photo reloaded from DB (File.size=0) → fetch image bytes from the
+   *    backend /preview endpoint and send to LLM as base64
    */
   const processOnePhoto = async (photoId: string) => {
     const photo = photosRef.current.find(p => p.id === photoId);
@@ -357,8 +402,36 @@ const App: React.FC = () => {
     setCurrentProcessingPhoto(photo.name);
 
     try {
-      const base64Data = await fileToBase64(photo.file!);
-      const tags = await analyzeImage(base64Data, photo.file!.type);
+      let base64Data: string;
+      let mimeType: string;
+
+      const hasRealFile = photo.file && photo.file.size > 0;
+
+      if (hasRealFile) {
+        // Case A — fresh file selected by the user
+        base64Data = await fileToBase64(photo.file!);
+        mimeType = photo.file!.type || 'image/jpeg';
+      } else {
+        // Case B — photo loaded from DB (file placeholder, size=0)
+        // Fetch the image from the backend preview endpoint and re-encode it.
+        console.log(`📡 Fetching preview from backend for ${photo.name}`);
+        const res = await fetch(`/api/photos/${encodeURIComponent(photo.id)}/preview`);
+        if (!res.ok) throw new Error(`Preview fetch failed: ${res.status}`);
+        const blob = await res.blob();
+        mimeType = blob.type || 'image/jpeg';
+        // Convert blob → base64 via FileReader
+        base64Data = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const result = reader.result as string;
+            resolve(result.split(',')[1] || '');
+          };
+          reader.onerror = () => reject(new Error(`FileReader error for ${photo.name}`));
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      const tags = await analyzeImage(base64Data, mimeType);
       console.log(`✅ Tags for ${photo.name}:`, tags);
 
       const updatedPhoto = {
@@ -383,14 +456,13 @@ const App: React.FC = () => {
         name: updatedPhoto.name,
         path: absoluteFilePath,
         folderPath: absoluteFolderPath,
-        size: updatedPhoto.file!.size,
-        lastModified: updatedPhoto.file!.lastModified,
-        mimeType: updatedPhoto.file!.type,
+        size: hasRealFile ? updatedPhoto.file!.size : 0,
+        lastModified: hasRealFile ? updatedPhoto.file!.lastModified : 0,
+        mimeType,
         tags: updatedPhoto.tags,
         status: 'done',
         indexedAt: Date.now(),
       };
-      // savePhoto now uses INSERT … ON CONFLICT DO UPDATE, so tags & status are always persisted
       await savePhoto(storedPhoto);
       console.log(`💾 Saved: ${photo.name} → ${absoluteFilePath}`);
 
@@ -750,6 +822,57 @@ const App: React.FC = () => {
       setFolders([]);
       setSelectedFolder(null);
       alert('All data cleared');
+    }
+  };
+
+  // ─── EXIF Sync handlers ───────────────────────────────────────────────────
+  const handleSyncExif = async () => {
+    setShowDataModal(false);
+    setIsLoading(true);
+    setLoadingMessage('Synchronisation EXIF en cours...');
+    try {
+      const result = await syncExifTags('both', selectedFolder || undefined);
+      const msg = [
+        `✅ Synchronisation EXIF terminée`,
+        ``,
+        `📥 Tags lus depuis les fichiers et injectés en DB : ${result.injected}`,
+        `📤 Tags DB écrits dans les métadonnées des fichiers : ${result.written}`,
+        `⏭️  Photos déjà synchronisées (ignorées) : ${result.skipped}`,
+        result.missing > 0 ? `⚠️  Fichiers introuvables sur le disque : ${result.missing}` : '',
+        ``,
+        `Total analysé : ${result.total}`,
+      ].filter(Boolean).join('\n');
+      alert(msg);
+      // Reload photos to reflect injected tags
+      const savedPhotos = await getAllPhotos();
+      if (savedPhotos.length > 0) {
+        setPhotos(prev => prev.map(p => {
+          const updated = savedPhotos.find(s => s.id === p.id);
+          return updated ? { ...p, tags: updated.tags, status: updated.status as Photo['status'] } : p;
+        }));
+      }
+    } catch (err) {
+      alert(`Erreur sync EXIF : ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsLoading(false);
+      setLoadingMessage('');
+    }
+  };
+
+  const handleRewriteExif = async () => {
+    const doneWithTags = photos.filter(p => p.status === 'done' && p.tags.length > 0).length;
+    if (!confirm(`Réécrire les métadonnées EXIF pour ${doneWithTags} photos indexées ?\n\nCela écrase les métadonnées existantes avec les tags de la base de données.`)) return;
+    setShowDataModal(false);
+    setIsLoading(true);
+    setLoadingMessage('Réécriture EXIF en cours...');
+    try {
+      const result = await rewriteExifTags(selectedFolder || undefined);
+      alert(`✅ EXIF réécrits\n\n📤 Fichiers mis à jour : ${result.written}\n⚠️  Fichiers manquants : ${result.missing}\nTotal : ${result.total}`);
+    } catch (err) {
+      alert(`Erreur réécriture EXIF : ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsLoading(false);
+      setLoadingMessage('');
     }
   };
 
@@ -1565,6 +1688,40 @@ const App: React.FC = () => {
                       Retry Uncategorized ({photos.filter(p => p.tags.length === 1 && p.tags[0] === 'Uncategorized').length})
                     </button>
                   )}
+
+                  {/* ── EXIF Sync section ──────────────────────────────── */}
+                  <div className="border border-zinc-700 rounded-lg overflow-hidden">
+                    <div className="bg-zinc-800/60 px-4 py-2 text-xs font-medium text-zinc-400 uppercase tracking-wide">
+                      Métadonnées EXIF / XMP
+                    </div>
+                    <div className="p-3 space-y-2">
+                      <button
+                        onClick={handleSyncExif}
+                        disabled={photos.length === 0}
+                        className="w-full px-4 py-2.5 bg-blue-700 hover:bg-blue-600 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+                        <span>
+                          Synchroniser les tags EXIF
+                          {selectedFolder && <span className="ml-1 opacity-70 text-xs">(dossier sélectionné)</span>}
+                        </span>
+                      </button>
+                      <p className="text-[10px] text-zinc-500 px-1">
+                        Lit les tags depuis les fichiers → injecte en DB ; et écrit les tags DB → fichiers manquants.
+                      </p>
+                      <button
+                        onClick={handleRewriteExif}
+                        disabled={photos.filter(p => p.status === 'done' && p.tags.length > 0).length === 0}
+                        className="w-full px-4 py-2.5 bg-zinc-700 hover:bg-zinc-600 disabled:bg-zinc-800 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+                        Réécrire tous les tags EXIF ({photos.filter(p => p.status === 'done' && p.tags.length > 0).length} photos)
+                      </button>
+                      <p className="text-[10px] text-zinc-500 px-1">
+                        Force la réécriture des métadonnées EXIF/IPTC/XMP pour toutes les photos indexées.
+                      </p>
+                    </div>
+                  </div>
                   
                   <button
                     onClick={handleExportCSV}
