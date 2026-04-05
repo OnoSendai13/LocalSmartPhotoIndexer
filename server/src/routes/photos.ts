@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
-import { getDb } from '../db.js';
+import { getDb, saveDb } from '../db.js';
 import { writeTagsToFile } from '../exif.js';
+import { resetWatchers } from '../watcher.js';
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
 
@@ -309,12 +310,39 @@ photosRouter.post('/photos/import', async (c) => {
   return c.json({ success: true, photosImported });
 });
 
-// DELETE /api/photos/all — clear all photos AND folders
+// DELETE /api/photos/all — clear all photos AND folders atomically
+//
+// Three-step safety guarantee:
+//  1. Stop all chokidar file watchers FIRST so they cannot re-insert photos
+//     into the DB while we are clearing it.
+//  2. Run both DELETEs inside a single SQL transaction so the disk file is
+//     never left in a half-cleared state (single save() at commit).
+//  3. saveDb() is called by runTransaction() after COMMIT, flushing the
+//     empty DB to disk before the response is sent.
 photosRouter.delete('/photos/all', (c) => {
+  // Step 1: stop file watchers so chokidar cannot re-insert photos
+  try { resetWatchers(); } catch { /* non-fatal */ }
+
   const db = getDb();
-  const info = db.prepare('DELETE FROM photos').run();
-  db.prepare('DELETE FROM folders').run();
-  return c.json({ success: true, deleted: info.changes });
+  let deleted = 0;
+
+  // Steps 2 + 3: atomic clear + single disk flush
+  try {
+    db.runTransaction(() => {
+      const info = db.prepare('DELETE FROM photos').run();
+      deleted = info.changes;
+      db.prepare('DELETE FROM folders').run();
+    });
+  } catch (err) {
+    console.error('[CLEAR] Transaction failed:', err);
+    return c.json({ error: 'Failed to clear data' }, 500);
+  }
+
+  // Explicit extra flush in case runTransaction's save() was skipped
+  try { saveDb(); } catch { /* ignore */ }
+
+  console.log(`[CLEAR] Deleted ${deleted} photos and all folders from DB`);
+  return c.json({ success: true, deleted });
 });
 
 // POST /api/photos/sync-exif

@@ -885,13 +885,17 @@ const App: React.FC = () => {
   };
 
   const handleClearData = async () => {
-    if (confirm('Are you sure you want to clear all indexed data? This cannot be undone.')) {
-      // BUG FIX #5: clearAllPhotos now also clears folders table (see backend fix)
-      await clearAllPhotos();
-      setPhotos([]);
-      setFolders([]);
-      setSelectedFolder(null);
-      alert('All data cleared');
+    if (confirm('Supprimer toutes les données indexées ? Cette action est irréversible.')) {
+      try {
+        await clearAllPhotos();
+        // Reload the page so React state, processingQueue and file handles are all reset.
+        // The backend has already stopped file watchers and flushed an empty DB to disk,
+        // so a page reload will find 0 photos — no risk of stale data reappearing.
+        window.location.reload();
+      } catch (err) {
+        console.error('Clear failed:', err);
+        alert(`Erreur lors de la suppression : ${err}`);
+      }
     }
   };
 
