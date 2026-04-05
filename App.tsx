@@ -5,6 +5,9 @@ import { Photo, Category, AIProvider, AppSettings, TAG_CATEGORIES, DEFAULT_SETTI
 import { analyzeImageWithOllama, fileToBase64, checkOllamaConnection, RECOMMENDED_MODELS, getInstalledModels } from './services/ollamaService';
 import { analyzeImageWithOpenRouter, checkOpenRouterConnection, OPENROUTER_VISION_MODELS } from './services/openrouterService';
 import { analyzeImageWithGemini, checkGeminiConnection, GEMINI_MODELS } from './services/geminiService';
+
+const API_BASE = '/api';
+
 import {
   savePhoto,
   getAllPhotos,
@@ -14,6 +17,10 @@ import {
   importData,
   clearAllPhotos,
   getFolders,
+  addFolder,
+  updatePhotoStatus,
+  updatePhotoTags as apiUpdatePhotoTags,
+  resetProcessingPhotos,
   Photo as StoredPhoto,
 } from './services/apiService';
 import {
@@ -105,23 +112,31 @@ const App: React.FC = () => {
           });
         }
 
+        // BUG FIX #4: Reset any photos stuck in 'processing' on startup
+        const resetCount = await resetProcessingPhotos();
+        if (resetCount > 0) {
+          console.log(`🔄 Reset ${resetCount} interrupted photos back to 'pending'`);
+        }
+
         // Load registered folders
         await refreshFolders();
 
-        // Load saved photos from IndexedDB
+        // Load saved photos from backend DB
         const savedPhotos = await getAllPhotos();
         let loadedPhotos: Photo[] = [];
         
         if (savedPhotos.length > 0) {
           console.log(`📚 Loading ${savedPhotos.length} indexed photos from database`);
           // Convert stored photos to app photos (without File objects initially)
+          // BUG FIX #1+2: Use sp.path (absolute) as absoluteFolderPath context
           loadedPhotos = savedPhotos.map(sp => ({
             id: sp.id,
             file: new File([], sp.name), // Placeholder - will be replaced if folder is connected
-            previewUrl: '', // Empty = no preview, will show placeholder
+            previewUrl: '', // Empty = will use backend /api/photos/:id/preview
             name: sp.name,
-            path: sp.path,
-            folderPath: sp.folderPath,
+            path: sp.path,                       // Absolute path stored by backend
+            folderPath: sp.folderPath,            // Absolute folder path from backend
+            absoluteFolderPath: sp.folderPath,   // Same: backend stores absolute paths
             tags: sp.tags,
             status: sp.status,
             indexedAt: sp.indexedAt,
@@ -246,7 +261,11 @@ const App: React.FC = () => {
   const filteredPhotos = useMemo(() => {
     let result = photos;
     if (selectedFolder) {
-      result = result.filter(p => p.folderPath === selectedFolder);
+      // BUG FIX #2: Filter by absoluteFolderPath OR folderPath (handle both old and new records)
+      result = result.filter(p => 
+        p.absoluteFolderPath === selectedFolder || 
+        p.folderPath === selectedFolder
+      );
     }
     if (selectedCategory) {
       result = result.filter(p => p.tags.includes(selectedCategory));
@@ -323,7 +342,7 @@ const App: React.FC = () => {
     setCurrentProcessingPhoto(photo.name);
 
     try {
-      console.log(`📤 Sending to Ollama: ${photo.name}`);
+      console.log(`📤 Sending to AI: ${photo.name}`);
       const base64Data = await fileToBase64(photo.file);
       const tags = await analyzeImage(base64Data, photo.file.type);
       console.log(`✅ Tags received for ${photo.name}:`, tags);
@@ -337,12 +356,20 @@ const App: React.FC = () => {
       
       setPhotos(prev => prev.map(p => p.id === photoId ? updatedPhoto : p));
       
-      // Auto-save to IndexedDB immediately (crash-safe)
+      // BUG FIX #1+3: Use absoluteFolderPath for backend storage so EXIF and preview work correctly
+      // The 'path' field sent to backend must be the ABSOLUTE path to the file
+      const absoluteFolderPath = updatedPhoto.absoluteFolderPath || updatedPhoto.folderPath || '';
+      const absoluteFilePath = absoluteFolderPath
+        ? (updatedPhoto.path && updatedPhoto.path.startsWith('/') 
+            ? updatedPhoto.path  // already absolute
+            : absoluteFolderPath + '/' + (updatedPhoto.path?.split('/').pop() || updatedPhoto.name))
+        : (updatedPhoto.path || '');
+
       const storedPhoto: StoredPhoto = {
         id: updatedPhoto.id,
         name: updatedPhoto.name,
-        path: updatedPhoto.path || '',
-        folderPath: updatedPhoto.folderPath || '',
+        path: absoluteFilePath,          // ABSOLUTE path for EXIF write & preview
+        folderPath: absoluteFolderPath,  // ABSOLUTE folder path
         size: updatedPhoto.file.size,
         lastModified: updatedPhoto.file.lastModified,
         mimeType: updatedPhoto.file.type,
@@ -351,7 +378,7 @@ const App: React.FC = () => {
         indexedAt: Date.now(),
       };
       await savePhoto(storedPhoto);
-      console.log(`💾 Saved to IndexedDB: ${photo.name}`);
+      console.log(`💾 Saved to DB: ${photo.name} (path: ${absoluteFilePath})`);
       
     } catch (error) {
       console.error(`❌ Failed to process ${photo.name}`, error);
@@ -367,11 +394,6 @@ const App: React.FC = () => {
   };
 
   const handleFolderSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    console.log('🔥 handleFolderSelect CALLED');
-    console.log('🔥 event:', event);
-    console.log('🔥 event.target:', event.target);
-    console.log('🔥 event.target.files:', event.target.files);
-    
     const files = event.target.files;
     console.log('📁 Folder selected, files:', files?.length);
     
@@ -380,18 +402,12 @@ const App: React.FC = () => {
       return;
     }
 
-    // Debug: Log first few files
-    Array.from(files).slice(0, 5).forEach((f, i) => {
-      console.log(`  File ${i}: ${f.name}, type: ${f.type}, path: ${f.webkitRelativePath}`);
-    });
-
     // Start scanning
     setIsScanning(true);
     setScanProgress({ current: 0, total: files.length, currentFile: 'Scanning folder...' });
 
     // Auto-retry connection if it was previously failed
-    let currentStatus = connectionStatus;
-    if (currentStatus !== 'connected') {
+    if (connectionStatus !== 'connected') {
       const isNowConnected = await checkConnection();
       if (!isNowConnected) {
         const providerName = settings.provider === 'ollama' ? 'Ollama' : 
@@ -399,21 +415,59 @@ const App: React.FC = () => {
         alert(`Connection Failed: Please check your ${providerName} configuration in settings.`);
         setShowSettings(true);
         setIsScanning(false);
+        if (fileInputRef.current) fileInputRef.current.value = '';
         return;
       }
     }
 
-    // Get folder path from first file
+    // BUG FIX #1+2: Get absolute path from user for backend registration
+    // The browser only provides relative paths (webkitRelativePath), so we must ask
+    // the user for the absolute server-side path of the folder.
     const firstFile = files[0];
-    const folderPath = firstFile.webkitRelativePath?.split('/')[0] || 'Imported';
+    const relativeFolderName = firstFile.webkitRelativePath?.split('/')[0] || 'Imported';
+    
+    const absoluteFolderPath = prompt(
+      `📁 Chemin absolu du dossier "${relativeFolderName}" sur le serveur ?\n\n` +
+      `Exemple : /home/user/Photos/${relativeFolderName}\n` +
+      `(Nécessaire pour les previews et l'écriture des métadonnées EXIF)`,
+      `/home/user/Photos/${relativeFolderName}`
+    );
+    
+    if (!absoluteFolderPath || !absoluteFolderPath.trim()) {
+      setIsScanning(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+    
+    const cleanAbsolutePath = absoluteFolderPath.trim().replace(/\/+$/, ''); // remove trailing slash
 
-    // Load already indexed photos to skip duplicates
+    // Register folder with backend (this validates the path exists on server)
+    let registeredFolderPath = cleanAbsolutePath;
+    let backendFolderId: string | null = null;
+    try {
+      const folderResult = await addFolder(cleanAbsolutePath, relativeFolderName);
+      registeredFolderPath = cleanAbsolutePath;
+      backendFolderId = folderResult.id;
+      console.log(`✅ Folder registered with backend: ${cleanAbsolutePath} (id: ${folderResult.id})`);
+      // Refresh folders list in sidebar
+      await refreshFolders();
+    } catch (err) {
+      console.warn(`⚠️ Could not register folder with backend: ${err}`);
+      // Continue anyway - backend may not have access but we can still index
+    }
+
+    // Load already indexed photos from backend to skip duplicates
+    // BUG FIX #5 part: compare by absolute path, not relative
     let alreadyIndexedPaths = new Set<string>();
     let alreadyIndexedCount = 0;
     try {
       const savedPhotos = await getAllPhotos();
-      alreadyIndexedPaths = new Set(savedPhotos.map(p => p.path));
-      console.log(`📚 Found ${savedPhotos.length} already indexed photos in database`);
+      // Build set of absolute paths already indexed for this folder
+      alreadyIndexedPaths = new Set(savedPhotos
+        .filter(p => p.folderPath === cleanAbsolutePath || p.folderPath === registeredFolderPath)
+        .map(p => p.path)
+      );
+      console.log(`📚 Found ${alreadyIndexedPaths.size} already indexed photos for this folder`);
     } catch (e) {
       console.warn('Could not load existing photos for duplicate check');
     }
@@ -433,70 +487,43 @@ const App: React.FC = () => {
         currentFile: file.name 
       });
       
-      // Only allow standard image formats - exclude RAW files
       const fileName = file.name.toLowerCase();
       
       // RAW and large format files to exclude
       const excludedExtensions = [
-        // RAW formats
-        '.cr2', '.cr3',     // Canon
-        '.nef', '.nrw',     // Nikon
-        '.arw', '.srf',     // Sony
-        '.orf',             // Olympus
-        '.rw2',             // Panasonic
-        '.raf',             // Fujifilm
-        '.dng',             // Adobe DNG
-        '.raw', '.rwl',     // Leica
-        '.pef',             // Pentax
-        '.srw',             // Samsung
-        '.x3f',             // Sigma
-        '.3fr',             // Hasselblad
-        '.iiq',             // Phase One
-        '.erf',             // Epson
-        '.kdc', '.dcr',     // Kodak
-        // Large format files (often too big for vision models)
-        '.tif', '.tiff',    // TIFF (DxO exports, etc.) - often 50-100MB
-        '.psd',             // Photoshop files
-        '.psb',             // Large Photoshop files
+        '.cr2', '.cr3', '.nef', '.nrw', '.arw', '.srf', '.orf', '.rw2',
+        '.raf', '.dng', '.raw', '.rwl', '.pef', '.srw', '.x3f', '.3fr',
+        '.iiq', '.erf', '.kdc', '.dcr', '.tif', '.tiff', '.psd', '.psb',
       ];
+      if (excludedExtensions.some(ext => fileName.endsWith(ext))) continue;
       
-      // Check if it's an excluded file - skip it
-      const isExcludedFile = excludedExtensions.some(ext => fileName.endsWith(ext));
-      if (isExcludedFile) {
-        continue; // Skip excluded files silently
-      }
-      
-      // Allowed image formats only
       const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'];
       const isAllowedByExt = allowedExtensions.some(ext => fileName.endsWith(ext));
       const isImageByType = file.type.startsWith('image/') && !file.type.includes('raw') && !file.type.includes('tiff');
-      
-      if (!isImageByType && !isAllowedByExt) {
-        continue;
-      }
-      
-      // Note: Large files are now handled by automatic resizing in ollamaService
-      // No need to skip them here anymore!
+      if (!isImageByType && !isAllowedByExt) continue;
 
-      const relativePath = file.webkitRelativePath || file.name;
+      // BUG FIX #1: Build the ABSOLUTE path for this file
+      const relativePathInFolder = file.webkitRelativePath 
+        ? file.webkitRelativePath.split('/').slice(1).join('/') // remove root folder name
+        : file.name;
+      const absoluteFilePath = `${cleanAbsolutePath}/${relativePathInFolder}`;
       
-      // Skip already indexed photos (duplicate detection)
-      if (alreadyIndexedPaths.has(relativePath)) {
+      // BUG FIX #5: Duplicate detection using absolute paths
+      if (alreadyIndexedPaths.has(absoluteFilePath)) {
         alreadyIndexedCount++;
         continue;
       }
 
       const id = Math.random().toString(36).substring(7);
-      // DON'T create blob URLs here - it causes memory issues with large folders!
-      // Preview URLs will be created lazily when needed for display
 
       newPhotos.push({
         id,
         file,
-        previewUrl: '', // Empty - will be created on-demand
+        previewUrl: '',             // Empty - will be created on-demand or via backend
         name: file.name,
-        path: relativePath,
-        folderPath: folderPath,
+        path: absoluteFilePath,     // BUG FIX #1: ABSOLUTE path
+        folderPath: relativeFolderName,
+        absoluteFolderPath: cleanAbsolutePath,  // BUG FIX #2: Store absolute for backend use
         tags: [],
         status: 'pending'
       });
@@ -522,12 +549,10 @@ const App: React.FC = () => {
     
     if (newPhotos.length === 0) {
       alert('No image files found in the selected folder.');
-      // Reset the input so user can select again
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
     
-    // Show info if some were skipped
     if (alreadyIndexedCount > 0) {
       console.log(`ℹ️ Skipping ${alreadyIndexedCount} already indexed photos, processing ${newPhotos.length} new ones`);
     }
@@ -536,19 +561,16 @@ const App: React.FC = () => {
     setPhotos(prev => {
       const updatedPhotos = [...prev, ...newPhotos];
       
-      // Start processing after state is updated
       processingQueue.current.push(...newQueueIds);
       
       if (!isProcessing) {
         setIsProcessing(true);
-        // Use setTimeout to ensure state is updated before processing
         setTimeout(() => processQueueWithPhotos(updatedPhotos), 0);
       }
       
       return updatedPhotos;
     });
 
-    // Reset the input so user can select the same folder again if needed
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -573,22 +595,32 @@ const App: React.FC = () => {
     setPhotos(prev => prev.map(p => p.id === photoId ? { ...p, tags: newTags } : p));
     setSelectedPhoto(prev => prev ? { ...prev, tags: newTags } : null);
     
-    // Update in IndexedDB
-    const photo = photos.find(p => p.id === photoId);
-    if (photo) {
-      const storedPhoto: StoredPhoto = {
-        id: photo.id,
-        name: photo.name,
-        path: photo.path || '',
-        folderPath: photo.folderPath || '',
-        size: photo.file.size,
-        lastModified: photo.file.lastModified,
-        mimeType: photo.file.type,
-        tags: newTags,
-        status: photo.status,
-        indexedAt: Date.now(),
-      };
-      await savePhoto(storedPhoto);
+    // Update in backend DB - use apiUpdatePhotoTags which triggers EXIF write server-side
+    try {
+      await apiUpdatePhotoTags(photoId, newTags);
+    } catch (err) {
+      console.warn('Failed to update photo tags in backend:', err);
+      // Fallback: use full savePhoto
+      const photo = photos.find(p => p.id === photoId);
+      if (photo) {
+        const absoluteFolderPath = photo.absoluteFolderPath || photo.folderPath || '';
+        const absoluteFilePath = photo.path && photo.path.startsWith('/')
+          ? photo.path
+          : absoluteFolderPath ? `${absoluteFolderPath}/${photo.name}` : (photo.path || '');
+        const storedPhoto: StoredPhoto = {
+          id: photo.id,
+          name: photo.name,
+          path: absoluteFilePath,
+          folderPath: absoluteFolderPath,
+          size: photo.file.size,
+          lastModified: photo.file.lastModified,
+          mimeType: photo.file.type,
+          tags: newTags,
+          status: photo.status,
+          indexedAt: photo.indexedAt,
+        };
+        await savePhoto(storedPhoto);
+      }
     }
   };
 
@@ -634,8 +666,11 @@ const App: React.FC = () => {
 
   const handleClearData = async () => {
     if (confirm('Are you sure you want to clear all indexed data? This cannot be undone.')) {
+      // BUG FIX #5: clearAllPhotos now also clears folders table (see backend fix)
       await clearAllPhotos();
       setPhotos([]);
+      setFolders([]);
+      setSelectedFolder(null);
       alert('All data cleared');
     }
   };
@@ -1576,14 +1611,19 @@ const App: React.FC = () => {
             {/* Image Section */}
             <div className="flex-1 bg-black flex items-center justify-center relative min-h-[300px] lg:min-h-[600px] p-4">
                <img
-                 src={selectedPhoto.previewUrl || `${API_BASE}/photos/${selectedPhoto.id}/preview`}
+                 src={
+                   // BUG FIX #1: Use blob URL if available, otherwise use backend preview endpoint
+                   (selectedPhoto.previewUrl && selectedPhoto.previewUrl !== '')
+                     ? selectedPhoto.previewUrl
+                     : (selectedPhoto.file && selectedPhoto.file.size > 0)
+                       ? URL.createObjectURL(selectedPhoto.file)
+                       : `${API_BASE}/photos/${encodeURIComponent(selectedPhoto.id)}/preview`
+                 }
                  alt={selectedPhoto.name}
                  className="max-w-full max-h-full object-contain"
                  onError={(e) => {
                    const target = e.target as HTMLImageElement;
-                   if (target.src !== selectedPhoto.previewUrl) {
-                     target.style.display = 'none';
-                   }
+                   target.style.opacity = '0.3';
                  }}
                />
             </div>

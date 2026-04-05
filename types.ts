@@ -14,12 +14,13 @@ export interface Photo {
   file: File;
   previewUrl: string;
   name: string;
-  path?: string;           // Relative path from imported folder
-  folderPath?: string;     // Root folder that was imported
+  path?: string;                 // Relative path from imported folder (webkitRelativePath)
+  folderPath?: string;           // Display folder name (root folder that was imported)
+  absoluteFolderPath?: string;   // Absolute server-side folder path (registered in backend)
   tags: string[];
   status: PhotoStatus;
-  indexedAt?: number;      // Timestamp when tags were generated
-  errorMessage?: string;   // Error details if processing failed
+  indexedAt?: number;            // Timestamp when tags were generated
+  errorMessage?: string;         // Error details if processing failed
 }
 
 // Category for sidebar grouping

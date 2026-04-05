@@ -91,6 +91,19 @@ async function start() {
   // Init SQLite (async — must load WASM first)
   await initDb();
 
+  // BUG FIX #4: Reset any photos stuck in 'processing' state from a previous interrupted run
+  try {
+    const db = (await import('./db.js')).getDb();
+    const result = db.prepare(
+      "UPDATE photos SET status = 'pending', updated_at = unixepoch('now') WHERE status = 'processing'"
+    ).run();
+    if (result.changes > 0) {
+      console.log(`[STARTUP] Reset ${result.changes} interrupted 'processing' photos back to 'pending'`);
+    }
+  } catch (err) {
+    console.warn('[STARTUP] Could not reset processing photos:', err);
+  }
+
   // Start file watchers for already-registered folders
   try {
     startAllWatchers();
