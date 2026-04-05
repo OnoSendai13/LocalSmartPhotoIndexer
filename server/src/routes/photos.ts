@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { getDb, saveDb } from '../db.js';
+import { getDb, saveDb, execAndSave } from '../db.js';
 import { writeTagsToFile } from '../exif.js';
 import { resetWatchers } from '../watcher.js';
 import path from 'path';
@@ -17,6 +17,7 @@ interface PhotoRow {
   mime_type: string;
   tags: string;
   status: string;
+  thumbnail: string | null;
   indexed_at: number | null;
   error_message: string | null;
   created_at: number;
@@ -33,6 +34,7 @@ interface Photo {
   mimeType: string;
   tags: string[];
   status: 'pending' | 'processing' | 'done' | 'error';
+  thumbnail?: string;
   indexedAt?: number;
   errorMessage?: string;
   createdAt: number;
@@ -50,6 +52,7 @@ function rowToPhoto(row: PhotoRow): Photo {
     mimeType: row.mime_type,
     tags: JSON.parse(row.tags || '[]'),
     status: row.status as Photo['status'],
+    thumbnail: row.thumbnail ?? undefined,
     indexedAt: row.indexed_at ?? undefined,
     errorMessage: row.error_message ?? undefined,
     createdAt: row.created_at,
@@ -143,26 +146,21 @@ photosRouter.put('/photos/:id', async (c) => {
 });
 
 // POST /api/photos — upsert photo(s) in batch
-// Uses INSERT OR REPLACE so that re-saving a photo (e.g. after AI tagging)
-// always updates tags, status, path, etc. — INSERT OR IGNORE silently dropped updates.
+// INSERT OR REPLACE handles conflicts on BOTH (id) and (folder_path, name),
+// ensuring no duplicate rows regardless of whether the frontend uses DB UUIDs
+// or generated IDs (MODE B — path inaccessible).
 photosRouter.post('/photos', async (c) => {
   const db = getDb();
   const body = await c.req.json();
   const photos: Photo[] = Array.isArray(body) ? body : [body];
 
   const upsert = db.prepare(`
-    INSERT INTO photos
-      (id, name, path, folder_path, size, last_modified, mime_type, tags, status, indexed_at, error_message, created_at, updated_at)
+    INSERT OR REPLACE INTO photos
+      (id, name, path, folder_path, size, last_modified, mime_type, tags, status, thumbnail, indexed_at, error_message, created_at, updated_at)
     VALUES
-      (@id, @name, @path, @folderPath, @size, @lastModified, @mimeType, @tags, @status, @indexedAt, @errorMessage, unixepoch('now'), unixepoch('now'))
-    ON CONFLICT(id) DO UPDATE SET
-      path         = excluded.path,
-      folder_path  = excluded.folder_path,
-      tags         = excluded.tags,
-      status       = excluded.status,
-      indexed_at   = excluded.indexed_at,
-      error_message= excluded.error_message,
-      updated_at   = unixepoch('now')
+      (@id, @name, @path, @folderPath, @size, @lastModified, @mimeType, @tags, @status, @thumbnail, @indexedAt, @errorMessage,
+       COALESCE((SELECT created_at FROM photos WHERE id=@id), unixepoch('now')),
+       unixepoch('now'))
   `);
 
   const upsertMany = db.transaction((items: Photo[]) => {
@@ -177,6 +175,7 @@ photosRouter.post('/photos', async (c) => {
         mimeType: item.mimeType,
         tags: JSON.stringify(item.tags || []),
         status: item.status || 'pending',
+        thumbnail: item.thumbnail || null,
         indexedAt: item.indexedAt ? Math.floor(item.indexedAt / 1000) : null,
         errorMessage: item.errorMessage || null,
       });
@@ -310,39 +309,32 @@ photosRouter.post('/photos/import', async (c) => {
   return c.json({ success: true, photosImported });
 });
 
-// DELETE /api/photos/all — clear all photos AND folders atomically
-//
-// Three-step safety guarantee:
-//  1. Stop all chokidar file watchers FIRST so they cannot re-insert photos
-//     into the DB while we are clearing it.
-//  2. Run both DELETEs inside a single SQL transaction so the disk file is
-//     never left in a half-cleared state (single save() at commit).
-//  3. saveDb() is called by runTransaction() after COMMIT, flushing the
-//     empty DB to disk before the response is sent.
+// DELETE /api/photos/all — wipe every row from photos AND folders, flush to disk
 photosRouter.delete('/photos/all', (c) => {
-  // Step 1: stop file watchers so chokidar cannot re-insert photos
+  // 1. Stop all chokidar watchers so they can't re-insert photos during/after clear
   try { resetWatchers(); } catch { /* non-fatal */ }
 
-  const db = getDb();
-  let deleted = 0;
-
-  // Steps 2 + 3: atomic clear + single disk flush
   try {
-    db.runTransaction(() => {
-      const info = db.prepare('DELETE FROM photos').run();
-      deleted = info.changes;
-      db.prepare('DELETE FROM folders').run();
-    });
+    // 2. Wipe both tables in a single atomic exec and flush to disk immediately.
+    //    execAndSave bypasses the wrapper's per-statement save() calls and writes
+    //    once after both DELETEs complete inside the same sql.js run() call.
+    execAndSave('DELETE FROM photos; DELETE FROM folders;');
   } catch (err) {
-    console.error('[CLEAR] Transaction failed:', err);
-    return c.json({ error: 'Failed to clear data' }, 500);
+    console.error('[CLEAR] execAndSave failed:', err);
+    // Fallback: try via wrapper individually
+    try {
+      const db = getDb();
+      db.prepare('DELETE FROM photos').run();
+      db.prepare('DELETE FROM folders').run();
+      saveDb();
+    } catch (err2) {
+      console.error('[CLEAR] fallback also failed:', err2);
+      return c.json({ error: 'Failed to clear data' }, 500);
+    }
   }
 
-  // Explicit extra flush in case runTransaction's save() was skipped
-  try { saveDb(); } catch { /* ignore */ }
-
-  console.log(`[CLEAR] Deleted ${deleted} photos and all folders from DB`);
-  return c.json({ success: true, deleted });
+  console.log('[CLEAR] All photos and folders deleted from DB and flushed to disk');
+  return c.json({ success: true });
 });
 
 // POST /api/photos/sync-exif

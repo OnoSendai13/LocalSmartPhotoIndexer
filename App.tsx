@@ -157,14 +157,17 @@ const App: React.FC = () => {
           const loadedPhotos: Photo[] = savedPhotos.map(sp => ({
             id: sp.id,
             // Placeholder File — size=0 signals that the real file isn't loaded yet.
-            // LazyImage detects this and falls back to /api/photos/:id/preview.
+            // LazyImage detects this and falls back to thumbnail or /api/photos/:id/preview.
             file: new File([], sp.name),
-            previewUrl: '',
+            // Use stored thumbnail as preview URL so the grid shows images immediately
+            // even if the backend cannot reach the file on disk.
+            previewUrl: sp.thumbnail || '',
             name: sp.name,
             path: sp.path,
             folderPath: sp.folderPath,
             absoluteFolderPath: sp.folderPath,
             tags: sp.tags,
+            thumbnail: sp.thumbnail,
             status: sp.status,
             indexedAt: sp.indexedAt,
           }));
@@ -435,11 +438,45 @@ const App: React.FC = () => {
       const tags = await analyzeImage(base64Data, mimeType);
       console.log(`✅ Tags for ${photo.name}:`, tags);
 
+      // Generate a small thumbnail (96px) from the real file for persistent preview.
+      // This base64 thumbnail is stored in the DB so previews work after page reload
+      // even when the backend cannot reach the file (e.g. photos on Windows, server on Linux).
+      let thumbnailBase64: string | undefined;
+      if (hasRealFile) {
+        try {
+          thumbnailBase64 = await new Promise<string>((resolve) => {
+            const img = new Image();
+            const objUrl = URL.createObjectURL(photo.file!);
+            img.onload = () => {
+              const MAX = 96;
+              const ratio = Math.min(MAX / img.width, MAX / img.height);
+              const w = Math.round(img.width * ratio);
+              const h = Math.round(img.height * ratio);
+              const canvas = document.createElement('canvas');
+              canvas.width = w; canvas.height = h;
+              const ctx = canvas.getContext('2d');
+              if (ctx) {
+                ctx.drawImage(img, 0, 0, w, h);
+                resolve(canvas.toDataURL('image/jpeg', 0.7));
+              } else {
+                resolve('');
+              }
+              URL.revokeObjectURL(objUrl);
+            };
+            img.onerror = () => { URL.revokeObjectURL(objUrl); resolve(''); };
+            img.src = objUrl;
+          });
+        } catch { thumbnailBase64 = undefined; }
+      }
+
       const updatedPhoto = {
         ...photo,
         tags: [...new Set([...photo.tags, ...tags])],
         status: 'done' as const,
         indexedAt: Date.now(),
+        // Store thumbnail as previewUrl so LazyImage uses it immediately
+        previewUrl: thumbnailBase64 || photo.previewUrl,
+        thumbnail: thumbnailBase64,
       };
 
       setPhotos(prev => prev.map(p => p.id === photoId ? updatedPhoto : p));
@@ -461,6 +498,7 @@ const App: React.FC = () => {
         lastModified: hasRealFile ? updatedPhoto.file!.lastModified : 0,
         mimeType,
         tags: updatedPhoto.tags,
+        thumbnail: thumbnailBase64,
         status: 'done',
         indexedAt: Date.now(),
       };

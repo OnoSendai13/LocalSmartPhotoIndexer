@@ -32,6 +32,17 @@ export function saveDb(): void {
   save();
 }
 
+/**
+ * Directly execute one or more SQL statements on the raw sql.js DB and flush to disk.
+ * Use ONLY for admin operations (e.g. clearing all data) where the normal wrapper
+ * would add overhead or risk partial saves.
+ */
+export function execAndSave(sql: string): void {
+  if (!_db) throw new Error('Database not initialized');
+  _db.run(sql);
+  save();
+}
+
 // ─── Statement wrapper ───────────────────────────────────────────────────────
 
 class Stmt {
@@ -198,6 +209,7 @@ function _initSchema(db: import('sql.js').Database): void {
       mime_type TEXT NOT NULL,
       tags TEXT NOT NULL DEFAULT '[]',
       status TEXT NOT NULL DEFAULT 'pending',
+      thumbnail TEXT,
       indexed_at INTEGER,
       error_message TEXT,
       created_at INTEGER NOT NULL DEFAULT (unixepoch('now')),
@@ -205,6 +217,8 @@ function _initSchema(db: import('sql.js').Database): void {
       UNIQUE(folder_path, name)
     )
   `);
+  // Migration: add thumbnail column if it doesn't exist yet (for existing DBs)
+  try { db.run('ALTER TABLE photos ADD COLUMN thumbnail TEXT'); } catch { /* already exists */ }
   db.run(`CREATE INDEX IF NOT EXISTS idx_photos_status ON photos(status)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_photos_folder_path ON photos(folder_path)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_photos_name ON photos(name)`);
