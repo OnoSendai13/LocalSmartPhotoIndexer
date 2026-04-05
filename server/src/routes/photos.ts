@@ -317,20 +317,21 @@ photosRouter.post('/photos/import', async (c) => {
 });
 
 // DELETE /api/photos/all — wipe every row from photos AND folders, flush to disk
-photosRouter.delete('/photos/all', (c) => {
+photosRouter.delete('/photos/all', async (c) => {
   // 1. Stop all chokidar watchers FIRST so they fire no more 'add' events
   try { resetWatchers(); } catch { /* non-fatal */ }
 
   try {
-    // 2. nukeDb(): freezes save(), deletes all rows in memory, writes empty
-    //    DB to disk, then unfreezes — server keeps running with clean state.
-    nukeDb();
+    // 2. nukeDb(): deletes the .db FILE from disk, closes the old in-memory DB,
+    //    creates a fresh empty SQL.Database(), re-applies the schema, and saves it.
+    //    This is the only 100% reliable way — no race condition possible.
+    await nukeDb();
   } catch (err) {
     console.error('[CLEAR] nukeDb failed:', err);
     return c.json({ error: 'Failed to clear data' }, 500);
   }
 
-  console.log('[CLEAR] ✅ All photos and folders deleted. DB is empty and saved.');
+  console.log('[CLEAR] ✅ DB file deleted and recreated empty. Server running clean.');
   return c.json({ success: true });
 });
 
