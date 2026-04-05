@@ -70,6 +70,34 @@ app.route('/api', settingsRouter);
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok' }));
 
+// Debug: read DB state from disk (independent of in-memory state)
+app.get('/api/debug/db', async (c) => {
+  try {
+    const { existsSync, readFileSync, statSync } = await import('fs');
+    const { join } = await import('path');
+    const dbFile = join(process.cwd(), 'data', 'photo-index.db');
+    if (!existsSync(dbFile)) {
+      return c.json({ exists: false, message: 'DB file does not exist on disk' });
+    }
+    const stat = statSync(dbFile);
+    // Also count from in-memory DB
+    const { getDb } = await import('./db.js');
+    const db = getDb();
+    const photosInMemory = (db.prepare('SELECT COUNT(*) as cnt FROM photos').get() as { cnt: number }).cnt;
+    const foldersInMemory = (db.prepare('SELECT COUNT(*) as cnt FROM folders').get() as { cnt: number }).cnt;
+    return c.json({
+      exists: true,
+      fileSizeBytes: stat.size,
+      fileModifiedAt: new Date(stat.mtimeMs).toISOString(),
+      inMemory: { photos: photosInMemory, folders: foldersInMemory },
+      cwd: process.cwd(),
+      dbPath: dbFile,
+    });
+  } catch (e) {
+    return c.json({ error: String(e) }, 500);
+  }
+});
+
 const PORT = parseInt(process.env.PORT || '6800', 10);
 
 // ─── Server start ─────────────────────────────────────────────────────────────
