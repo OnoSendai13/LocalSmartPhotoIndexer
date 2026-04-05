@@ -48,6 +48,11 @@ export interface SidebarProps {
   folderStatus?: 'none' | 'needs_permission' | 'connected';
   connectedFolderName?: string | null;
   onRequestPermission?: () => void;
+  // Multiple folders support
+  folders?: { id: string; name: string; path: string }[];
+  selectedFolder?: string | null;
+  onSelectFolder?: (folderPath: string | null) => void;
+  onAddFolder?: () => void;
 }
 
 // Photo grid component props

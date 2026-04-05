@@ -164,6 +164,30 @@ export async function checkApiHealth(): Promise<boolean> {
   }
 }
 
+export interface FolderInfo {
+  id: string;
+  name: string;
+  path: string;
+  registered_at: number;
+  last_scanned_at?: number;
+}
+
+export async function getFolders(): Promise<FolderInfo[]> {
+  const res = await fetch(`${API_BASE}/folders`);
+  if (!res.ok) throw new Error(`GET /folders failed: ${res.status}`);
+  return res.json();
+}
+
+export async function addFolder(path: string, name?: string): Promise<{ id: string; name: string; newPhotos: number }> {
+  const res = await fetch(`${API_BASE}/folders`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, name }),
+  });
+  if (!res.ok) throw new Error(`POST /folders failed: ${res.status}`);
+  return res.json();
+}
+
 // ─── Backup / Restore ─────────────────────────────────────────────────────────
 
 export async function exportData(): Promise<string> {

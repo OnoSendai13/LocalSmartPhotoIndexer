@@ -90,14 +90,16 @@ class Database {
 
   transaction<T extends unknown[]>(fn: (items: T) => void): (items: T) => void {
     return (items: T) => {
-      _db!.run('BEGIN TRANSACTION');
+      // sql.js runs in autocommit mode; BEGIN/COMMIT are advisory-only in WASM.
+      // Run the statements, save on success, throw on failure.
       try {
         fn(items);
-        _db!.run('COMMIT');
         save();
-      } catch {
-        _db!.run('ROLLBACK');
-        throw new Error('Transaction rolled back');
+      } catch (err) {
+        // Attempt rollback — will silently fail if no transaction was active
+        // (sql.js emits a warning but no exception for spurious ROLLBACK)
+        try { _db!.run('ROLLBACK'); } catch { /* no active transaction */ }
+        throw err;
       }
     };
   }

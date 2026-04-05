@@ -219,8 +219,13 @@ photosRouter.get('/photos/:id/preview', (c) => {
     const row = getDb().prepare('SELECT * FROM photos WHERE id = @id').get({ id: c.req.param('id') }) as PhotoRow | undefined;
     if (!row) return c.json({ error: 'Not found' }, 404);
 
-    const fullPath = path.join(row.folder_path, row.name);
-    if (!existsSync(fullPath)) return c.json({ error: 'File not found' }, 404);
+    // row.path is the absolute file path (since watcher fix)
+    let fullPath = row.path;
+    // Fallback: try folder_path + name if path is just a filename
+    if (!fullPath || !existsSync(fullPath)) {
+      fullPath = path.join(row.folder_path, row.name);
+    }
+    if (!fullPath || !existsSync(fullPath)) return c.json({ error: 'File not found' }, 404);
 
     const buffer = readFileSync(fullPath);
     c.header('Content-Type', row.mime_type);

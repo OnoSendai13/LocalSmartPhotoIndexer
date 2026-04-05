@@ -43,10 +43,10 @@ const KeyIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>
 );
 
-export const Sidebar: React.FC<SidebarProps> = ({ 
-  categories, 
-  selectedCategory, 
-  onSelectCategory, 
+export const Sidebar: React.FC<SidebarProps> = ({
+  categories,
+  selectedCategory,
+  onSelectCategory,
   totalPhotos,
   processedCount,
   isProcessing,
@@ -57,7 +57,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   uncategorizedCount,
   folderStatus,
   connectedFolderName,
-  onRequestPermission
+  onRequestPermission,
+  folders = [],
+  selectedFolder,
+  onSelectFolder,
+  onAddFolder,
 }) => {
   const percentComplete = totalPhotos > 0 ? Math.round((processedCount / totalPhotos) * 100) : 0;
 
@@ -157,6 +161,41 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </button>
           )}
         </div>
+
+        {/* Folders list */}
+        {folders.length > 0 && (
+          <div className="mb-4">
+            <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2 px-3">
+              Folders
+            </h3>
+            <div className="space-y-1">
+              {folders.map((folder) => (
+                <button
+                  key={folder.id}
+                  onClick={() => onSelectFolder?.(selectedFolder === folder.path ? null : folder.path)}
+                  className={`w-full text-left px-3 py-1.5 rounded-md flex items-center gap-2 text-sm transition-all ${
+                    selectedFolder === folder.path
+                      ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50'
+                  }`}
+                  title={folder.path}
+                >
+                  <FolderIcon />
+                  <span className="truncate max-w-[140px]">{folder.name}</span>
+                </button>
+              ))}
+            </div>
+            {onAddFolder && (
+              <button
+                onClick={onAddFolder}
+                className="w-full text-left px-3 py-1.5 flex items-center gap-2 text-xs text-zinc-600 hover:text-zinc-400 mt-1"
+              >
+                <PlusIcon />
+                <span>Add folder...</span>
+              </button>
+            )}
+          </div>
+        )}
 
         {categories.length > 0 && (
           <div>

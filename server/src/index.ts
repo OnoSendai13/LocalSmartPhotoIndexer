@@ -1,11 +1,57 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import * as net from 'net';
+import { execSync } from 'child_process';
 import { initDb, closeDb } from './db.js';
 import { photosRouter } from './routes/photos.js';
 import { foldersRouter } from './routes/folders.js';
 import { settingsRouter } from './routes/settings.js';
 import { startAllWatchers, startPeriodicScans, stopAllWatchers } from './watcher.js';
+
+/** Check if a port is in use, and optionally free it (Windows only via taskkill). */
+async function ensurePortFree(port: number, force = false): Promise<void> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', (_err: NodeJS.ErrnoException) => {
+      if (_err.code === 'EADDRINUSE') {
+        if (force) {
+          // Use lsof to find PID (works from WSL seeing Windows processes)
+          // and kill it with the Unix kill command (WSL forwards to Windows)
+          try {
+            const out = execSync(
+              `lsof -ti :${port} 2>/dev/null | head -1`,
+              { encoding: 'utf8', shell: '/bin/sh' }
+            ).trim();
+            const pid = parseInt(out, 10);
+            if (pid && !isNaN(pid)) {
+              console.warn(`[PORT] Port ${port} in use by WSL PID ${pid} — killing...`);
+              execSync(`kill -9 ${pid}`, { shell: '/bin/sh' });
+              console.warn(`[PORT] Process killed. Retrying in 1s...`);
+              setTimeout(resolve, 1000);
+            } else {
+              console.warn(`[PORT] Could not find PID for port ${port} via lsof — assuming free`);
+              resolve();
+            }
+          } catch (killErr) {
+            console.error(`[PORT] Failed to kill process on port ${port}:`, killErr);
+            process.exit(1);
+          }
+        } else {
+          console.error(`[PORT] Port ${port} is already in use. Run with FORCE_PORT=true to auto-kill.`);
+          process.exit(1);
+        }
+      } else {
+        resolve(); // different error, port is probably fine
+      }
+    });
+    server.once('listening', () => {
+      server.close();
+      resolve();
+    });
+    server.listen(port);
+  });
+}
 
 const app = new Hono();
 
@@ -24,7 +70,7 @@ app.route('/api', settingsRouter);
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok' }));
 
-const PORT = parseInt(process.env.PORT || '3001', 10);
+const PORT = parseInt(process.env.PORT || '6800', 10);
 
 // ─── Server start ─────────────────────────────────────────────────────────────
 
@@ -38,6 +84,10 @@ process.on('unhandledRejection', (reason) => {
 });
 
 async function start() {
+  // Ensure port is free (auto-kill previous process if FORCE_PORT=true)
+  const force = process.env.FORCE_PORT === 'true';
+  await ensurePortFree(PORT, force);
+
   // Init SQLite (async — must load WASM first)
   await initDb();
 
@@ -51,7 +101,6 @@ async function start() {
 
   const server = serve({ fetch: app.fetch, port: PORT });
   console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`SQLite DB: ${dbPath}`);
 }
 
 function shutdown() {

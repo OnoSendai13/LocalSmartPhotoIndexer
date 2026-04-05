@@ -1,6 +1,6 @@
 import { watch } from 'chokidar';
 import { statSync, existsSync, readdirSync } from 'fs';
-import { join, relative } from 'path';
+import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { getDb } from './db.js';
 
@@ -21,9 +21,7 @@ function getMimeType(filename: string): string {
 
 function addPhotoSync(folderId: string, folderPath: string, fullPath: string): boolean {
   const db = getDb();
-  const name = fullPath.split(/[\/\\]/).pop() || fullPath;
-  const relPath = relative(folderPath, fullPath);
-  if (!relPath) return false;
+  const name = fullPath.split(/[\\/\\]/).pop() || fullPath;
 
   const existing = db.prepare('SELECT id FROM photos WHERE folder_path = @fp AND name = @n').get({ fp: folderPath, n: name });
   if (existing) return false;
@@ -34,7 +32,7 @@ function addPhotoSync(folderId: string, folderPath: string, fullPath: string): b
   db.prepare(`
     INSERT INTO photos (id, name, path, folder_path, size, last_modified, mime_type, tags, status)
     VALUES (@id, @n, @rp, @fp, @sz, @lm, @mt, '[]', 'pending')
-  `).run({ id: randomUUID(), n: name, rp: relPath, fp: folderPath, sz: stats.size, lm: Math.floor(stats.mtimeMs), mt: getMimeType(name) });
+  `).run({ id: randomUUID(), n: name, rp: fullPath, fp: folderPath, sz: stats.size, lm: Math.floor(stats.mtimeMs), mt: getMimeType(name) });
 
   return true;
 }

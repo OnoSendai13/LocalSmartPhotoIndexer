@@ -13,6 +13,7 @@ import {
   exportData,
   importData,
   clearAllPhotos,
+  getFolders,
   Photo as StoredPhoto,
 } from './services/apiService';
 import {
@@ -43,6 +44,7 @@ const App: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [showSettings, setShowSettings] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
+  const [connectionError, setConnectionError] = useState<string>('');
   const [installedModels, setInstalledModels] = useState<string[]>([]);
 
   // Processing State
@@ -70,6 +72,18 @@ const App: React.FC = () => {
   const [folderStatus, setFolderStatus] = useState<'none' | 'needs_permission' | 'connected'>('none');
   const [connectedFolderName, setConnectedFolderName] = useState<string | null>(null);
 
+  // Multiple folders support
+  const [folders, setFolders] = useState<{ id: string; name: string; path: string }[]>([]);
+  const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+
+  // Refresh folders from backend
+  const refreshFolders = useCallback(async () => {
+    try {
+      const f = await getFolders();
+      setFolders(f.map(fi => ({ id: fi.id, name: fi.name, path: fi.path })));
+    } catch { /* ignore */ }
+  }, []);
+
   // Load settings and photos on mount
   useEffect(() => {
     const loadData = async () => {
@@ -90,7 +104,10 @@ const App: React.FC = () => {
             geminiModel: savedSettings.geminiModel,
           });
         }
-        
+
+        // Load registered folders
+        await refreshFolders();
+
         // Load saved photos from IndexedDB
         const savedPhotos = await getAllPhotos();
         let loadedPhotos: Photo[] = [];
@@ -170,6 +187,17 @@ const App: React.FC = () => {
             const models = await getInstalledModels(settings.ollamaUrl);
             setInstalledModels(models);
             console.log(`🦙 Installed models:`, models);
+
+            // Verify the selected model is actually installed
+            const modelBase = settings.ollamaModel.split(':')[0];
+            const isInstalled = models.some(m => m.startsWith(modelBase));
+            if (!isInstalled) {
+              console.warn(`🦙 Model "${settings.ollamaModel}" is NOT installed. Installed models:`, models);
+              isConnected = false;
+              setConnectionError(`Model "${settings.ollamaModel}" is not installed.`);
+            } else {
+              console.log(`🦙 Model "${settings.ollamaModel}" is installed.`);
+            }
           }
           break;
         case 'openrouter':
@@ -190,6 +218,7 @@ const App: React.FC = () => {
     } catch (error) {
       console.error('❌ Connection check failed with exception:', error);
       setConnectionStatus('error');
+      setConnectionError(error instanceof Error ? error.message : 'Connection failed');
       return false;
     }
   };
@@ -215,9 +244,15 @@ const App: React.FC = () => {
   }, [photos]);
 
   const filteredPhotos = useMemo(() => {
-    if (!selectedCategory) return photos;
-    return photos.filter(p => p.tags.includes(selectedCategory));
-  }, [photos, selectedCategory]);
+    let result = photos;
+    if (selectedFolder) {
+      result = result.filter(p => p.folderPath === selectedFolder);
+    }
+    if (selectedCategory) {
+      result = result.filter(p => p.tags.includes(selectedCategory));
+    }
+    return result;
+  }, [photos, selectedFolder, selectedCategory]);
 
   const processedCount = photos.filter(p => p.status === 'done' || p.status === 'error').length;
 
@@ -268,6 +303,7 @@ const App: React.FC = () => {
       setIsProcessing(false);
       setCurrentProcessingPhoto('');
       console.log('✅ Processing complete!');
+      refreshFolders();
       return;
     }
 
@@ -1093,7 +1129,7 @@ const App: React.FC = () => {
         </div>
       )}
       
-      <Sidebar 
+      <Sidebar
         categories={categories}
         selectedCategory={selectedCategory}
         onSelectCategory={setSelectedCategory}
@@ -1108,6 +1144,12 @@ const App: React.FC = () => {
         folderStatus={folderStatus}
         connectedFolderName={connectedFolderName}
         onRequestPermission={handleRequestFolderPermission}
+        folders={folders}
+        selectedFolder={selectedFolder}
+        onSelectFolder={(path) => {
+          setSelectedFolder(path);
+        }}
+        onAddFolder={handleLinkFolder}
       />
 
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
@@ -1115,7 +1157,7 @@ const App: React.FC = () => {
         <div className="h-16 border-b border-zinc-800 bg-zinc-900/50 backdrop-blur-xl flex items-center justify-between px-6 shrink-0 z-10">
           <div>
             <h2 className="text-lg font-semibold text-white">
-              {selectedCategory ? `${selectedCategory} Gallery` : 'All Photos'}
+              {selectedFolder ? `${folders.find(f => f.path === selectedFolder)?.name || 'Folder'}` : selectedCategory ? `${selectedCategory} Gallery` : 'All Photos'}
             </h2>
             <div className="flex items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></span>
@@ -1220,18 +1262,17 @@ const App: React.FC = () => {
                 {connectionStatus === 'error' && (
                   <div className="p-3 bg-red-900/30 border border-red-800/50 rounded-lg">
                     <p className="text-xs text-red-200 font-semibold mb-1">Connection Failed</p>
-                    {settings.provider === 'ollama' && (
-                      <p className="text-[10px] text-red-300">
-                        Most likely CORS is blocking the request. Restart Ollama with:
-                        <br/>
-                        <code className="bg-black/30 px-1 rounded block mt-1 select-all">OLLAMA_ORIGINS="*" ollama serve</code>
+                    <p className="text-[10px] text-red-300">{connectionError}</p>
+                    {settings.provider === 'ollama' && connectionError.includes('not installed') && (
+                      <p className="text-[10px] text-yellow-300 mt-1">
+                        Pull the model with:<br/>
+                        <code className="bg-black/30 px-1 rounded block mt-1">docker exec ollama ollama pull {settings.ollamaModel}</code>
                       </p>
                     )}
-                    {settings.provider === 'openrouter' && (
-                      <p className="text-[10px] text-red-300">Check your API key is valid.</p>
-                    )}
-                    {settings.provider === 'gemini' && (
-                      <p className="text-[10px] text-red-300">Check your API key is valid.</p>
+                    {settings.provider === 'ollama' && !connectionError.includes('not installed') && (
+                      <p className="text-[10px] text-red-300 mt-1">
+                        Check CORS settings or that Ollama is running.
+                      </p>
                     )}
                   </div>
                 )}
@@ -1269,6 +1310,12 @@ const App: React.FC = () => {
                         <div className="mt-2 text-[10px] text-zinc-500">
                           <span className="text-zinc-400">Installed:</span> {installedModels.slice(0, 5).join(', ')}
                           {installedModels.length > 5 && ` +${installedModels.length - 5} more`}
+                        </div>
+                      )}
+                      {!installedModels.some(m => m.startsWith(settings.ollamaModel.split(':')[0])) && installedModels.length > 0 && (
+                        <div className="mt-2 text-[10px] text-yellow-400">
+                          Warning: "{settings.ollamaModel}" is not installed. Pull it with:<br/>
+                          <code className="bg-black/30 px-1 rounded mt-1 block">docker exec ollama ollama pull {settings.ollamaModel}</code>
                         </div>
                       )}
                     </div>
@@ -1528,10 +1575,16 @@ const App: React.FC = () => {
           <div className="flex flex-col lg:flex-row max-w-7xl w-full max-h-[90vh] bg-zinc-900 rounded-2xl overflow-hidden border border-zinc-800 shadow-2xl">
             {/* Image Section */}
             <div className="flex-1 bg-black flex items-center justify-center relative min-h-[300px] lg:min-h-[600px] p-4">
-               <img 
-                 src={selectedPhoto.previewUrl} 
+               <img
+                 src={selectedPhoto.previewUrl || `${API_BASE}/photos/${selectedPhoto.id}/preview`}
                  alt={selectedPhoto.name}
                  className="max-w-full max-h-full object-contain"
+                 onError={(e) => {
+                   const target = e.target as HTMLImageElement;
+                   if (target.src !== selectedPhoto.previewUrl) {
+                     target.style.display = 'none';
+                   }
+                 }}
                />
             </div>
             
