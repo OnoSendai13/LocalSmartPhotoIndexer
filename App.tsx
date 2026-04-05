@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { PhotoGrid } from './components/PhotoGrid';
+import { FolderPathModal } from './components/FolderPathModal';
 import { Photo, Category, AIProvider, AppSettings, TAG_CATEGORIES, DEFAULT_SETTINGS } from './types';
 import { analyzeImageWithOllama, fileToBase64, checkOllamaConnection, RECOMMENDED_MODELS, getInstalledModels } from './services/ollamaService';
 import { analyzeImageWithOpenRouter, checkOpenRouterConnection, OPENROUTER_VISION_MODELS } from './services/openrouterService';
@@ -21,6 +22,8 @@ import {
   updatePhotoStatus,
   updatePhotoTags as apiUpdatePhotoTags,
   resetProcessingPhotos,
+  getSystemInfo,
+  SystemInfo,
   Photo as StoredPhoto,
 } from './services/apiService';
 import {
@@ -83,6 +86,17 @@ const App: React.FC = () => {
   const [folders, setFolders] = useState<{ id: string; name: string; path: string }[]>([]);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
 
+  // System info (platform, homedir) — loaded once on mount
+  const [systemInfo, setSystemInfo] = useState<SystemInfo>({ platform: 'linux', homedir: '/home/user', sep: '/' });
+
+  // Folder path modal state
+  const [folderPathModalState, setFolderPathModalState] = useState<{
+    open: boolean;
+    folderName: string;
+    suggestedPath: string;
+    pendingFiles: FileList | null;
+  }>({ open: false, folderName: '', suggestedPath: '', pendingFiles: null });
+
   // Refresh folders from backend
   const refreshFolders = useCallback(async () => {
     try {
@@ -117,6 +131,11 @@ const App: React.FC = () => {
         if (resetCount > 0) {
           console.log(`🔄 Reset ${resetCount} interrupted photos back to 'pending'`);
         }
+
+        // Load system info for path suggestions in the folder modal
+        const sysInfo = await getSystemInfo();
+        setSystemInfo(sysInfo);
+        console.log(`🖥️ System: ${sysInfo.platform}, homedir: ${sysInfo.homedir}`);
 
         // Load registered folders
         await refreshFolders();
@@ -393,6 +412,11 @@ const App: React.FC = () => {
     }
   };
 
+  /**
+   * Step 1 — called when the user picks a folder via the native file picker.
+   * Validates the selection, checks the AI connection, then opens FolderPathModal
+   * to ask for the absolute server-side path before proceeding.
+   */
   const handleFolderSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     console.log('📁 Folder selected, files:', files?.length);
@@ -402,10 +426,6 @@ const App: React.FC = () => {
       return;
     }
 
-    // Start scanning
-    setIsScanning(true);
-    setScanProgress({ current: 0, total: files.length, currentFile: 'Scanning folder...' });
-
     // Auto-retry connection if it was previously failed
     if (connectionStatus !== 'connected') {
       const isNowConnected = await checkConnection();
@@ -414,40 +434,67 @@ const App: React.FC = () => {
                             settings.provider === 'openrouter' ? 'OpenRouter' : 'Gemini';
         alert(`Connection Failed: Please check your ${providerName} configuration in settings.`);
         setShowSettings(true);
-        setIsScanning(false);
         if (fileInputRef.current) fileInputRef.current.value = '';
         return;
       }
     }
 
-    // BUG FIX #1+2: Get absolute path from user for backend registration
-    // The browser only provides relative paths (webkitRelativePath), so we must ask
-    // the user for the absolute server-side path of the folder.
+    // Determine folder name from the first file's relative path
     const firstFile = files[0];
     const relativeFolderName = firstFile.webkitRelativePath?.split('/')[0] || 'Imported';
-    
-    const absoluteFolderPath = prompt(
-      `📁 Chemin absolu du dossier "${relativeFolderName}" sur le serveur ?\n\n` +
-      `Exemple : /home/user/Photos/${relativeFolderName}\n` +
-      `(Nécessaire pour les previews et l'écriture des métadonnées EXIF)`,
-      `/home/user/Photos/${relativeFolderName}`
-    );
-    
-    if (!absoluteFolderPath || !absoluteFolderPath.trim()) {
-      setIsScanning(false);
+
+    // Build an OS-aware suggested path using live system info from the backend
+    const suggestedPath = buildSuggestedPath(relativeFolderName);
+
+    // Open the modal — processing continues in handleFolderPathConfirm
+    setFolderPathModalState({
+      open: true,
+      folderName: relativeFolderName,
+      suggestedPath,
+      pendingFiles: files,
+    });
+  };
+
+  /** Builds a platform-aware path suggestion, e.g. /home/alice/Photos/Vacation */
+  const buildSuggestedPath = (folderName: string): string => {
+    const { platform, homedir, sep } = systemInfo;
+    if (platform === 'win32') {
+      // Windows native path (backend running on Windows)
+      return `${homedir}${sep}Pictures${sep}${folderName}`;
+    }
+    // Linux / macOS / WSL
+    return `${homedir}/Photos/${folderName}`;
+  };
+
+  /**
+   * Step 2 — called when the user confirms (or cancels) the path modal.
+   * If confirmed, continues scanning and indexing with the provided absolute path.
+   */
+  const handleFolderPathConfirm = async (absoluteFolderPath: string | null) => {
+    // Close modal first
+    const { pendingFiles } = folderPathModalState;
+    setFolderPathModalState(s => ({ ...s, open: false }));
+
+    if (!absoluteFolderPath || !pendingFiles) {
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
-    
-    const cleanAbsolutePath = absoluteFolderPath.trim().replace(/\/+$/, ''); // remove trailing slash
+
+    const cleanAbsolutePath = absoluteFolderPath.trim().replace(/[/\\]+$/, ''); // remove trailing slashes
+    const files = pendingFiles;
+
+    // Start scanning UI now that we have the path
+    setIsScanning(true);
+    setScanProgress({ current: 0, total: files.length, currentFile: 'Scanning folder...' });
+
+    // Derive the display name from the absolute path (last path segment)
+    const folderDisplayName = cleanAbsolutePath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'Imported';
 
     // Register folder with backend (this validates the path exists on server)
     let registeredFolderPath = cleanAbsolutePath;
-    let backendFolderId: string | null = null;
     try {
-      const folderResult = await addFolder(cleanAbsolutePath, relativeFolderName);
+      const folderResult = await addFolder(cleanAbsolutePath, folderDisplayName);
       registeredFolderPath = cleanAbsolutePath;
-      backendFolderId = folderResult.id;
       console.log(`✅ Folder registered with backend: ${cleanAbsolutePath} (id: ${folderResult.id})`);
       // Refresh folders list in sidebar
       await refreshFolders();
@@ -522,7 +569,7 @@ const App: React.FC = () => {
         previewUrl: '',             // Empty - will be created on-demand or via backend
         name: file.name,
         path: absoluteFilePath,     // BUG FIX #1: ABSOLUTE path
-        folderPath: relativeFolderName,
+        folderPath: cleanAbsolutePath,       // use absolute path consistently
         absoluteFolderPath: cleanAbsolutePath,  // BUG FIX #2: Store absolute for backend use
         tags: [],
         status: 'pending'
@@ -1147,6 +1194,15 @@ const App: React.FC = () => {
 
   return (
     <div className="flex h-screen bg-zinc-950 text-zinc-100">
+      {/* Folder Path Modal — shown when user picks a folder to get the absolute server path */}
+      {folderPathModalState.open && (
+        <FolderPathModal
+          folderName={folderPathModalState.folderName}
+          suggestedPath={folderPathModalState.suggestedPath}
+          onConfirm={handleFolderPathConfirm}
+        />
+      )}
+
       {/* Loading Overlay for long operations */}
       {isLoading && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">

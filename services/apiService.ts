@@ -153,6 +153,24 @@ export async function saveSettings(settings: Partial<AppSettings>): Promise<void
   if (!res.ok) throw new Error(`PUT /settings failed: ${res.status}`);
 }
 
+// ─── System Info ─────────────────────────────────────────────────────────────
+
+export interface SystemInfo {
+  platform: 'win32' | 'linux' | 'darwin' | string;
+  homedir: string;
+  sep: string;
+}
+
+export async function getSystemInfo(): Promise<SystemInfo> {
+  try {
+    const res = await fetch(`${API_BASE}/system/info`);
+    if (!res.ok) return { platform: 'linux', homedir: '/home/user', sep: '/' };
+    return res.json();
+  } catch {
+    return { platform: 'linux', homedir: '/home/user', sep: '/' };
+  }
+}
+
 // ─── Health ─────────────────────────────────────────────────────────────────
 
 export async function checkApiHealth(): Promise<boolean> {
