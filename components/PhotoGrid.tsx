@@ -18,48 +18,31 @@ const LazyImage: React.FC<{ photo: Photo; className?: string }> = ({ photo, clas
   const imgRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // Reset state when photo changes
     setIsLoaded(false);
 
-    // If previewUrl already exists, use it
+    // Priority 1: real file blob available → create a full-resolution object URL.
+    // This is the live-session path (folder just added, file picker still open).
+    // Full-res looks perfect and is revoked on unmount.
+    if (photo.file && photo.file.size > 0) {
+      const url = URL.createObjectURL(photo.file);
+      setImageUrl(url);
+      setUsedBlobUrl(true);
+      return;
+    }
+
+    // Priority 2: stored thumbnail (base64 JPEG 480px) — works after page reload
+    // when the backend cannot reach the file (Windows path / different OS).
     if (photo.previewUrl) {
       setImageUrl(photo.previewUrl);
       return;
     }
 
-    // BUG FIX #1: If no valid file blob, use backend preview endpoint directly
-    // This is the key fix - photos loaded from DB have empty File objects (size=0)
-    // so we must serve them via the backend which reads from the absolute path on disk
-    if (!photo.file || photo.file.size === 0) {
-      setImageUrl(`${API_BASE}/photos/${encodeURIComponent(photo.id)}/preview`);
-      return;
-    }
-
-    // Has a real file blob - use IntersectionObserver for lazy loading
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting && !imageUrl) {
-            const url = URL.createObjectURL(photo.file);
-            setImageUrl(url);
-            setUsedBlobUrl(true);
-            observer.disconnect();
-          }
-        });
-      },
-      { rootMargin: '200px' }
-    );
-
-    if (imgRef.current) {
-      observer.observe(imgRef.current);
-    }
-
-    return () => {
-      observer.disconnect();
-    };
+    // Priority 3: backend /preview endpoint — works when the server CAN read the file
+    // (same machine, accessible path). Used as last resort.
+    setImageUrl(`${API_BASE}/photos/${encodeURIComponent(photo.id)}/preview`);
   }, [photo.file, photo.previewUrl, photo.id]);
 
-  // Cleanup blob URL on unmount
+  // Cleanup blob URL on unmount to avoid memory leaks
   useEffect(() => {
     return () => {
       if (usedBlobUrl && imageUrl) {
