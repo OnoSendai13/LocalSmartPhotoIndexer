@@ -18,6 +18,8 @@ export interface Photo {
   mimeType: string;
   tags: string[];
   status: 'pending' | 'processing' | 'done' | 'error';
+  /** Small base64 JPEG thumbnail (~64px) stored in DB for offline preview */
+  thumbnail?: string;
   indexedAt?: number;
   errorMessage?: string;
   createdAt?: number;

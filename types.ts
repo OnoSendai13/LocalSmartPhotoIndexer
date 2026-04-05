@@ -19,6 +19,8 @@ export interface Photo {
   absoluteFolderPath?: string;   // Absolute server-side folder path (registered in backend)
   tags: string[];
   status: PhotoStatus;
+  /** Small base64 JPEG thumbnail (~96px) stored in DB for offline/cross-host preview */
+  thumbnail?: string;
   indexedAt?: number;            // Timestamp when tags were generated
   errorMessage?: string;         // Error details if processing failed
 }

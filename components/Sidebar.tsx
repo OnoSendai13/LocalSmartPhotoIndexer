@@ -181,7 +181,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   title={folder.path}
                 >
                   <FolderIcon />
-                  <span className="truncate max-w-[140px]">{folder.name}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-medium">{folder.name}</div>
+                    <div className="truncate text-[10px] opacity-50 font-mono">{folder.path}</div>
+                  </div>
                 </button>
               ))}
             </div>
