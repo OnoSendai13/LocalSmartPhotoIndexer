@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { getDb, saveDb, execAndSave, nukeDb } from '../db.js';
+import { getDb, saveDb, nukeDb } from '../db.js';
 import { writeTagsToFile } from '../exif.js';
 import { resetWatchers } from '../watcher.js';
 import path from 'path';
@@ -337,10 +337,9 @@ photosRouter.delete('/photos/all', async (c) => {
   // 1. Stop all file watchers so no chokidar callback can re-insert photos
   try { resetWatchers(); } catch (e) { console.warn('[CLEAR] resetWatchers:', e); }
 
-  // 2. Nuke the DB: delete the file on disk + reinitialize a fresh empty DB in memory
-  //    No process.exit — the server stays alive with a clean state.
+  // 2. Nuke the DB: DELETE all rows + overwrite disk file (synchronous, no process.exit)
   try {
-    await nukeDb();
+    nukeDb();
     console.log('[CLEAR] ✅ DB nuked — all photos and folders deleted, file rewritten.');
   } catch (e) {
     console.error('[CLEAR] nukeDb failed:', e);

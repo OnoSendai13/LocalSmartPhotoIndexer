@@ -7,7 +7,7 @@
  *   getDb().transaction(fn)(items)
  */
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, mkdirSync, unlinkSync, statSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -64,37 +64,34 @@ export function execAndSave(sql: string): void {
  * between our DELETE and our writeFileSync can call save() and overwrite
  * the file with stale data.  Replacing _db entirely prevents that race.
  */
-export async function nukeDb(): Promise<void> {
+export function nukeDb(): void {
   if (!_db) throw new Error('Database not initialized');
 
-  // Step 1: freeze — stop ALL save() calls immediately
+  const t = new Date().toISOString();
+  console.log(`[NUKE ${t}] Starting — will DELETE all rows then overwrite disk file`);
+
+  // Step 1: freeze all concurrent save() calls immediately
   _frozen = true;
 
   try {
-    // Step 2: delete the file on disk so there is nothing to restore from
-    if (existsSync(dbPath)) {
-      unlinkSync(dbPath);
-      console.log('[NUKE] Deleted', dbPath);
-    }
+    // Step 2: delete every row from both tables (in-memory)
+    _db.run('DELETE FROM photos');
+    _db.run('DELETE FROM folders');
+    const photosLeft = (_db.exec('SELECT COUNT(*) FROM photos')[0]?.values[0][0] ?? -1);
+    const foldersLeft = (_db.exec('SELECT COUNT(*) FROM folders')[0]?.values[0][0] ?? -1);
+    console.log(`[NUKE] In-memory after DELETE: photos=${photosLeft}, folders=${foldersLeft}`);
 
-    // Step 3: close the old in-memory DB
-    _db.close();
-    _db = null;
-
-    // Step 4: create a fresh empty in-memory DB
-    const initSqlJs = (await import('sql.js')).default;
-    const wasmBinary = readFileSync(wasmPath);
-    const SQL = await initSqlJs({ wasmBinary });
-    _db = new SQL.Database();
-    _db.run('PRAGMA foreign_keys = ON');
-    _initSchema(_db);
-
-    // Step 5: write the clean empty DB to disk
+    // Step 3: overwrite the disk file with the now-empty DB
+    if (existsSync(dbPath)) unlinkSync(dbPath);
     const data = _db.export();
     writeFileSync(dbPath, Buffer.from(data));
-    console.log('[NUKE] ✅ Fresh empty DB written to disk.');
+    const sizeAfter = statSync(dbPath).size;
+    console.log(`[NUKE] ✅ Disk file rewritten (${sizeAfter} bytes). DB is empty.`);
+  } catch (e) {
+    console.error('[NUKE] ❌ Failed:', e);
+    throw e;
   } finally {
-    // Step 6: always unfreeze so the server stays functional
+    // Step 4: always unfreeze — server keeps running normally
     _frozen = false;
   }
 }
