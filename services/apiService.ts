@@ -239,13 +239,16 @@ export async function getFolders(): Promise<FolderInfo[]> {
   return res.json();
 }
 
-export async function addFolder(path: string, name?: string): Promise<{ id: string; name: string; newPhotos: number }> {
+export async function addFolder(path: string, name?: string): Promise<{ id: string; name: string; newPhotos: number; alreadyRegistered?: boolean }> {
   const res = await fetch(`${API_BASE}/folders`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path, name }),
   });
-  if (!res.ok) throw new Error(`POST /folders failed: ${res.status}`);
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '');
+    throw new Error(`POST /folders failed (${res.status}): ${errBody}`);
+  }
   return res.json();
 }
 
