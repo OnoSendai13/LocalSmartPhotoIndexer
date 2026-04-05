@@ -1,7 +1,16 @@
 import { Hono } from 'hono';
 import { getDb } from '../db.js';
+import os from 'os';
 
 export const settingsRouter = new Hono();
+
+// GET /api/system/info — OS platform info so the frontend can suggest correct paths
+settingsRouter.get('/system/info', (c) => {
+  const platform = process.platform; // 'win32' | 'linux' | 'darwin'
+  const homedir = os.homedir();      // e.g. C:\Users\Alice  or  /home/alice
+  const sep = platform === 'win32' ? '\\' : '/';
+  return c.json({ platform, homedir, sep });
+});
 
 // GET /api/settings — return all settings as flat object
 settingsRouter.get('/settings', (c) => {
