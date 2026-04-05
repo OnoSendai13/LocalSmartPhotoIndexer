@@ -1,49 +1,58 @@
-import { ExifTool, WriteTagsRequest } from 'exiftool-vendored';
+import { ExifTool } from 'exiftool-vendored';
 
-const exiftool = new ExifTool();
+// Single shared ExifTool instance — reusing it avoids spawning a new process per call
+const exiftool = new ExifTool({ taskTimeoutMillis: 30_000 });
 
 /**
- * Write tags to a photo file's EXIF/XMP metadata.
- * Uses XPKeywords (Windows) and Keywords (standard EXIF).
+ * Write AI-generated tags to a photo file's EXIF/IPTC/XMP metadata.
+ *
+ * We write to two locations for maximum compatibility:
+ *   - Keywords (MWG composite)  — reconciles IPTC:Keywords + XMP-dc:Subject
+ *                                  → picked up by Lightroom, Bridge, digiKam, etc.
+ *   - XPKeywords (EXIF)         — Windows Explorer / legacy Windows apps
+ *                                  (must be a semicolon-separated string)
+ *
+ * The `overwrite_original` option avoids creating a "_original" backup file.
  */
 export async function writeTagsToFile(
   filePath: string,
   tags: string[],
 ): Promise<void> {
+  if (!tags || tags.length === 0) return;
   try {
-    const writeRequest: WriteTagsRequest = {
-      File: filePath,
-      IFD0: {
-        XPKeywords: tags.join('; '),
+    await exiftool.write(
+      filePath,
+      {
+        // MWG composite — writes to both IPTC:Keywords AND XMP-dc:Subject
         Keywords: tags,
+        // Windows Explorer keyword field (semicolon-separated string)
+        XPKeywords: tags.join('; '),
       },
-    };
-    await exiftool.writeTags(writeRequest);
-    console.log(`Tags written to file: ${filePath} -> [${tags.join(', ')}]`);
+      // -overwrite_original avoids creating a "_original" backup file
+      ['-overwrite_original'],
+    );
+    console.log(`✅ [EXIF] Tags written to ${filePath}: [${tags.join(', ')}]`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`Failed to write EXIF tags to ${filePath}: ${msg}`);
+    console.warn(`⚠️ [EXIF] Failed to write tags to ${filePath}: ${msg}`);
   }
 }
 
 /**
- * Read tags from a photo file's EXIF/XMP metadata.
- * Returns array of tag strings, empty on failure.
+ * Read tags from a photo file's EXIF/IPTC/XMP metadata.
+ * Checks Keywords (IPTC/composite) and EXIF:XPKeywords.
+ * Returns an empty array on failure.
  */
-export async function readTagsFromFile(
-  filePath: string,
-): Promise<string[]> {
+export async function readTagsFromFile(filePath: string): Promise<string[]> {
   try {
     const metadata = await exiftool.read(filePath);
-    const rawTags = metadata.Keywords || metadata.XPKeywords;
-    if (!rawTags) return [];
+    const raw: unknown =
+      (metadata as Record<string, unknown>)['Keywords'] ||
+      (metadata as Record<string, unknown>)['XPKeywords'];
 
-    if (typeof rawTags === 'string') {
-      return rawTags.split(/[;,\n]/).map(t => t.trim()).filter(Boolean);
-    }
-    if (Array.isArray(rawTags)) {
-      return rawTags.map(String).filter(Boolean);
-    }
+    if (!raw) return [];
+    if (Array.isArray(raw)) return (raw as unknown[]).map(String).filter(Boolean);
+    if (typeof raw === 'string') return raw.split(/[;,\n]/).map(t => t.trim()).filter(Boolean);
     return [];
   } catch {
     return [];

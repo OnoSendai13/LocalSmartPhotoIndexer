@@ -141,21 +141,32 @@ photosRouter.put('/photos/:id', async (c) => {
   return c.json({ success: true });
 });
 
-// POST /api/photos — create photo(s) in batch
+// POST /api/photos — upsert photo(s) in batch
+// Uses INSERT OR REPLACE so that re-saving a photo (e.g. after AI tagging)
+// always updates tags, status, path, etc. — INSERT OR IGNORE silently dropped updates.
 photosRouter.post('/photos', async (c) => {
   const db = getDb();
   const body = await c.req.json();
   const photos: Photo[] = Array.isArray(body) ? body : [body];
 
-  const insert = db.prepare(`
-    INSERT OR IGNORE INTO photos
-      (id, name, path, folder_path, size, last_modified, mime_type, tags, status, error_message)
-    VALUES (@id, @name, @path, @folderPath, @size, @lastModified, @mimeType, @tags, @status, @errorMessage)
+  const upsert = db.prepare(`
+    INSERT INTO photos
+      (id, name, path, folder_path, size, last_modified, mime_type, tags, status, indexed_at, error_message, created_at, updated_at)
+    VALUES
+      (@id, @name, @path, @folderPath, @size, @lastModified, @mimeType, @tags, @status, @indexedAt, @errorMessage, unixepoch('now'), unixepoch('now'))
+    ON CONFLICT(id) DO UPDATE SET
+      path         = excluded.path,
+      folder_path  = excluded.folder_path,
+      tags         = excluded.tags,
+      status       = excluded.status,
+      indexed_at   = excluded.indexed_at,
+      error_message= excluded.error_message,
+      updated_at   = unixepoch('now')
   `);
 
-  const insertMany = db.transaction((items: Photo[]) => {
+  const upsertMany = db.transaction((items: Photo[]) => {
     for (const item of items) {
-      insert.run({
+      upsert.run({
         id: item.id,
         name: item.name,
         path: item.path,
@@ -165,12 +176,22 @@ photosRouter.post('/photos', async (c) => {
         mimeType: item.mimeType,
         tags: JSON.stringify(item.tags || []),
         status: item.status || 'pending',
+        indexedAt: item.indexedAt ? Math.floor(item.indexedAt / 1000) : null,
         errorMessage: item.errorMessage || null,
       });
     }
   });
 
-  insertMany(photos);
+  upsertMany(photos);
+
+  // Trigger EXIF write for any photos that are 'done' and have tags
+  for (const item of photos) {
+    if (item.status === 'done' && item.tags && item.tags.length > 0 && item.path) {
+      const { writeTagsToFile } = await import('../exif.js');
+      void writeTagsToFile(item.path, item.tags);
+    }
+  }
+
   return c.json({ success: true, count: photos.length });
 });
 
