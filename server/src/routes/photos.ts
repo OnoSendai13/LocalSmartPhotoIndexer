@@ -263,18 +263,30 @@ photosRouter.get('/photos/:id/preview', (c) => {
     const row = getDb().prepare('SELECT * FROM photos WHERE id = @id').get({ id: c.req.param('id') }) as PhotoRow | undefined;
     if (!row) return c.json({ error: 'Not found' }, 404);
 
-    // row.path is the absolute file path (since watcher fix)
+    // Try to serve the real file from disk first
     let fullPath = row.path;
-    // Fallback: try folder_path + name if path is just a filename
     if (!fullPath || !existsSync(fullPath)) {
       fullPath = path.join(row.folder_path, row.name);
     }
-    if (!fullPath || !existsSync(fullPath)) return c.json({ error: 'File not found' }, 404);
+    if (fullPath && existsSync(fullPath)) {
+      const buffer = readFileSync(fullPath);
+      c.header('Content-Type', row.mime_type);
+      c.header('Cache-Control', 'public, max-age=86400');
+      return c.body(buffer);
+    }
 
-    const buffer = readFileSync(fullPath);
-    c.header('Content-Type', row.mime_type);
-    c.header('Cache-Control', 'public, max-age=86400');
-    return c.body(buffer);
+    // File not on disk (e.g. Windows path, server on different OS) —
+    // fall back to the base64 thumbnail stored in the DB.
+    if (row.thumbnail) {
+      // thumbnail is stored as a data URL: "data:image/jpeg;base64,..."
+      const base64 = row.thumbnail.includes(',') ? row.thumbnail.split(',')[1] : row.thumbnail;
+      const buf = Buffer.from(base64, 'base64');
+      c.header('Content-Type', 'image/jpeg');
+      c.header('Cache-Control', 'public, max-age=86400');
+      return c.body(buf);
+    }
+
+    return c.json({ error: 'File not found and no thumbnail available' }, 404);
   } catch (err: unknown) {
     return c.json({ error: err instanceof Error ? err.message : 'Not found' }, 404);
   }
