@@ -239,7 +239,16 @@ export async function getFolders(): Promise<FolderInfo[]> {
   return res.json();
 }
 
-export async function addFolder(path: string, name?: string): Promise<{ id: string; name: string; newPhotos: number; alreadyRegistered?: boolean }> {
+export interface FolderAddResult {
+  id: string;
+  name: string;
+  newPhotos: number;
+  /** true = backend can read the path and scanned it; false = path not accessible (EXIF disabled) */
+  pathAccessible: boolean;
+  alreadyRegistered?: boolean;
+}
+
+export async function addFolder(path: string, name?: string): Promise<FolderAddResult> {
   const res = await fetch(`${API_BASE}/folders`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -249,6 +258,22 @@ export async function addFolder(path: string, name?: string): Promise<{ id: stri
     const errBody = await res.text().catch(() => '');
     throw new Error(`POST /folders failed (${res.status}): ${errBody}`);
   }
+  return res.json();
+}
+
+export interface FolderProbeResult {
+  inputPath: string;
+  exists: boolean;
+  platform: string;
+  homedir: string;
+  cwd: string;
+  parentPath: string;
+  parentEntries: string[];
+}
+
+export async function probeFolder(path: string): Promise<FolderProbeResult> {
+  const res = await fetch(`${API_BASE}/folders/probe?path=${encodeURIComponent(path)}`);
+  if (!res.ok) throw new Error(`GET /folders/probe failed: ${res.status}`);
   return res.json();
 }
 

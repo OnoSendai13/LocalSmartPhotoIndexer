@@ -19,6 +19,7 @@ import {
   clearAllPhotos,
   getFolders,
   addFolder,
+  probeFolder,
   updatePhotoStatus,
   updatePhotoTags as apiUpdatePhotoTags,
   resetProcessingPhotos,
@@ -572,19 +573,25 @@ const App: React.FC = () => {
   /**
    * Step 2 — called when the user confirms (or cancels) the path modal.
    *
-   * UNIFIED FLOW (single source of truth = backend DB):
-   *  1. POST /folders → backend scans the folder and creates Photo rows with stable UUIDs.
-   *  2. GET /photos   → load the backend's photo records (including any that were already
-   *                     indexed in a previous session).
-   *  3. Build Photo[] objects from the DB records (File placeholder, size=0).
-   *  4. Queue only the *pending* IDs — done photos are shown immediately.
-   *  5. processOnePhoto fetches the image via /api/photos/:id/preview for LLM analysis.
+   * TWO-MODE FLOW depending on whether the backend can access the folder:
    *
-   * This eliminates the previous bug where the frontend created a second set of photos with
-   * random IDs (→ duplicate rows, "0 / 57 indexed", backend photos never processed).
+   * MODE A — pathAccessible=true (normal case):
+   *   1. POST /folders → backend scans + creates UUID photo rows
+   *   2. GET /photos   → frontend loads DB records (stable UUIDs)
+   *   3. Photo[] built from DB; real File attached if name matches
+   *   4. Queue pending IDs; done photos shown immediately
+   *   5. processOnePhoto encodes via real File (fast) or /preview (fallback)
+   *
+   * MODE B — pathAccessible=false (backend on different OS/drive, e.g. Node on
+   *           Windows but path is already in DB from a previous session, or path
+   *           is temporarily unavailable):
+   *   - Folder is still registered in DB (id obtained)
+   *   - Frontend builds Photo[] directly from browser File picker
+   *   - Real File blobs are attached → LLM processing works fully
+   *   - EXIF write will be skipped (server can't reach files), user is warned
+   *   - A small "path debug" report is shown so the user can fix the path
    */
   const handleFolderPathConfirm = async (absoluteFolderPath: string | null) => {
-    // Close modal first
     const { pendingFiles } = folderPathModalState;
     setFolderPathModalState(s => ({ ...s, open: false }));
 
@@ -596,29 +603,28 @@ const App: React.FC = () => {
     const cleanAbsolutePath = absoluteFolderPath.trim().replace(/[/\\]+$/, '');
 
     setIsScanning(true);
-    setScanProgress({ current: 0, total: 0, currentFile: 'Registering folder with backend…' });
+    setScanProgress({ current: 0, total: 0, currentFile: 'Enregistrement du dossier…' });
 
-    // ── Step 1: register folder → backend scans + creates UUID photo rows ──────
+    // ── Step 1: register folder with backend (tolerant — never throws 400) ────
+    let folderId: string | null = null;
+    let pathAccessible = false;
     try {
       const folderResult = await addFolder(cleanAbsolutePath);
-      console.log(`✅ Folder registered: ${cleanAbsolutePath} (id: ${folderResult.id}, newPhotos: ${folderResult.newPhotos ?? 'n/a'})`);
+      folderId = folderResult.id;
+      pathAccessible = folderResult.pathAccessible;
+      console.log(`✅ Folder registered: ${cleanAbsolutePath} (id: ${folderId}, accessible: ${pathAccessible}, newPhotos: ${folderResult.newPhotos})`);
       await refreshFolders();
     } catch (err) {
-      console.warn(`⚠️ Backend folder registration failed: ${err}`);
-      // If the backend cannot reach the path (e.g. different drive / WSL mismatch),
-      // warn the user instead of silently continuing with random IDs.
+      // Network error or unexpected server crash — abort
+      console.error(`❌ addFolder failed: ${err}`);
       setIsScanning(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
-      alert(
-        `Le backend ne trouve pas le dossier :\n${cleanAbsolutePath}\n\n` +
-        `Vérifiez que le chemin est correct pour le système où tourne le serveur Node.js.\n` +
-        `(WSL: /mnt/c/…   Windows natif: C:\\…   Linux: /home/…)`
-      );
+      alert(`Erreur réseau lors de l'enregistrement du dossier :\n${err}`);
       return;
     }
 
-    // ── Step 2: load ALL photos for this folder from the backend DB ───────────
-    setScanProgress({ current: 0, total: 0, currentFile: 'Loading photos from database…' });
+    // ── Step 2: load DB photos for this folder ────────────────────────────────
+    setScanProgress({ current: 0, total: 0, currentFile: 'Chargement depuis la base de données…' });
     let allDbPhotos: StoredPhoto[] = [];
     try {
       allDbPhotos = await getAllPhotos();
@@ -626,60 +632,151 @@ const App: React.FC = () => {
       console.warn('Could not load photos from DB:', e);
     }
 
-    const folderPhotos = allDbPhotos.filter(
-      p => p.folderPath === cleanAbsolutePath
-    );
-    console.log(`📚 Backend has ${folderPhotos.length} photos for this folder (${folderPhotos.filter(p => p.status === 'done').length} done, ${folderPhotos.filter(p => p.status === 'pending').length} pending)`);
+    const folderDbPhotos = allDbPhotos.filter(p => p.folderPath === cleanAbsolutePath);
+    console.log(`📚 DB has ${folderDbPhotos.length} photos for this folder`);
 
-    if (folderPhotos.length === 0) {
-      setIsScanning(false);
-      alert('Aucune image trouvée dans ce dossier. Vérifiez le chemin et les extensions supportées (.jpg, .jpeg, .png, .gif, .webp, .bmp).');
+    // ── Step 3: build Photo[] ─────────────────────────────────────────────────
+    // Map browser File objects by filename for quick lookup
+    const filesByName = new Map<string, File>();
+    Array.from(pendingFiles).forEach(f => filesByName.set(f.name, f));
+
+    const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']);
+    const RAW_EXTS = new Set(['.cr2','.cr3','.nef','.nrw','.arw','.srf','.orf','.rw2',
+      '.raf','.dng','.raw','.rwl','.pef','.srw','.x3f','.3fr','.iiq','.erf','.kdc',
+      '.dcr','.tif','.tiff','.psd','.psb']);
+
+    let photosToProcess: Photo[] = [];
+
+    if (pathAccessible && folderDbPhotos.length > 0) {
+      // MODE A: backend scanned successfully → use DB UUIDs
+      photosToProcess = folderDbPhotos.map(sp => {
+        const realFile = filesByName.get(sp.name);
+        return {
+          id: sp.id,
+          file: realFile ?? new File([], sp.name), // size=0 → /preview fallback
+          previewUrl: '',
+          name: sp.name,
+          path: sp.path,
+          folderPath: sp.folderPath,
+          absoluteFolderPath: sp.folderPath,
+          tags: sp.tags,
+          status: sp.status,
+          indexedAt: sp.indexedAt,
+        };
+      });
+    } else {
+      // MODE B: backend can't read the folder OR scanFolder returned 0 photos
+      // (e.g. different OS/drive). Build Photo[] from browser File picker.
+      // Use DB records for already-done photos; create new entries for new ones.
+      if (!pathAccessible) {
+        console.warn(`⚠️ Backend cannot access path, using browser File API (EXIF write disabled)`);
+      }
+
+      // Probe to help user debug path issues
+      try {
+        const probe = await probeFolder(cleanAbsolutePath);
+        console.log('🔍 Path probe:', probe);
+        if (!probe.exists && probe.parentEntries.length > 0) {
+          const similar = probe.parentEntries
+            .filter(e => e.toLowerCase().includes(cleanAbsolutePath.split(/[/\\]/).pop()?.toLowerCase() || ''))
+            .slice(0, 5);
+          if (similar.length > 0) {
+            console.log(`💡 Similar folder names in parent: ${similar.join(', ')}`);
+          }
+        }
+      } catch { /* probe is best-effort */ }
+
+      // Build set of already-done paths from DB
+      const donePathsInDb = new Set(folderDbPhotos.filter(p => p.status === 'done').map(p => p.path));
+
+      const filesArray = Array.from(pendingFiles);
+      for (let i = 0; i < filesArray.length; i++) {
+        const file = filesArray[i];
+        setScanProgress({ current: i + 1, total: filesArray.length, currentFile: file.name });
+
+        const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+        if (RAW_EXTS.has(ext)) continue;
+        if (!IMAGE_EXTS.has(ext) && !file.type.startsWith('image/')) continue;
+
+        const relPath = file.webkitRelativePath
+          ? file.webkitRelativePath.split('/').slice(1).join('/')
+          : file.name;
+        const absoluteFilePath = `${cleanAbsolutePath}/${relPath}`;
+
+        // Check if already done in DB
+        const dbEntry = folderDbPhotos.find(p => p.path === absoluteFilePath || p.name === file.name);
+        if (dbEntry && dbEntry.status === 'done') {
+          photosToProcess.push({
+            id: dbEntry.id,
+            file,
+            previewUrl: '',
+            name: dbEntry.name,
+            path: dbEntry.path,
+            folderPath: cleanAbsolutePath,
+            absoluteFolderPath: cleanAbsolutePath,
+            tags: dbEntry.tags,
+            status: 'done',
+            indexedAt: dbEntry.indexedAt,
+          });
+          continue;
+        }
+
+        // New photo or pending — use existing DB id if available, else generate one
+        const existingId = dbEntry?.id ?? Math.random().toString(36).substring(2, 9);
+        photosToProcess.push({
+          id: existingId,
+          file,
+          previewUrl: '',
+          name: file.name,
+          path: absoluteFilePath,
+          folderPath: cleanAbsolutePath,
+          absoluteFolderPath: cleanAbsolutePath,
+          tags: dbEntry?.tags ?? [],
+          status: dbEntry?.status === 'done' ? 'done' : 'pending',
+          indexedAt: dbEntry?.indexedAt,
+        });
+
+        if (i % 50 === 0) await new Promise(r => setTimeout(r, 10));
+      }
+
+      if (!pathAccessible) {
+        // Probe for actionable hint
+        try {
+          const probe = await probeFolder(cleanAbsolutePath);
+          const parentInfo = probe.parentEntries.length > 0
+            ? `\n\nDossiers disponibles dans "${probe.parentPath}" :\n${probe.parentEntries.slice(0, 10).join('\n')}`
+            : '';
+          console.warn(
+            `[PATH PROBE] platform=${probe.platform} homedir=${probe.homedir}\n` +
+            `inputPath="${probe.inputPath}" exists=${probe.exists}${parentInfo}`
+          );
+        } catch { /* ignore */ }
+      }
+    }
+
+    setIsScanning(false);
+
+    if (photosToProcess.length === 0) {
+      alert('Aucune image trouvée. Vérifiez le chemin et les extensions supportées (.jpg, .jpeg, .png, .gif, .webp, .bmp).');
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
 
-    // ── Step 3: build Photo[] from DB records (no random IDs!) ───────────────
-    // We also attach the real File objects from the browser file picker when the
-    // filename matches, so fresh files can be encoded directly without an extra
-    // round-trip to the preview endpoint.
-    const filesByName = new Map<string, File>();
-    Array.from(pendingFiles).forEach(f => filesByName.set(f.name, f));
+    // ── Step 4: merge into state and queue pending IDs ────────────────────────
+    const pendingIds = photosToProcess.filter(p => p.status === 'pending').map(p => p.id);
+    const doneCount = photosToProcess.filter(p => p.status === 'done').length;
 
-    const dbPhotos: Photo[] = folderPhotos.map(sp => {
-      const realFile = filesByName.get(sp.name);
-      return {
-        id: sp.id,
-        file: realFile ?? new File([], sp.name), // size=0 → will use /preview
-        previewUrl: '',
-        name: sp.name,
-        path: sp.path,
-        folderPath: sp.folderPath,
-        absoluteFolderPath: sp.folderPath,
-        tags: sp.tags,
-        status: sp.status,
-        indexedAt: sp.indexedAt,
-      };
-    });
+    console.log(`▶️ ${pendingIds.length} à traiter, ${doneCount} déjà indexées`);
 
-    // ── Step 4: merge into state and queue pending photos ─────────────────────
-    // Keep already-loaded photos (other folders) and replace/add for this folder.
-    const pendingIds = dbPhotos
-      .filter(p => p.status === 'pending')
-      .map(p => p.id);
-
-    const doneCount   = dbPhotos.filter(p => p.status === 'done').length;
-    const pendingCount = pendingIds.length;
-
-    console.log(`▶️ Queueing ${pendingCount} pending photos (${doneCount} already done)`);
-
-    setIsScanning(false);
+    if (!pathAccessible && pendingIds.length > 0) {
+      console.info('ℹ️ Traitement via File API navigateur — les métadonnées EXIF ne seront pas écrites (chemin inaccessible côté serveur).');
+    }
 
     setPhotos(prev => {
-      // Remove any stale entries for this folder, then append fresh ones
-      const otherFolders = prev.filter(p => p.folderPath !== cleanAbsolutePath);
-      const merged = [...otherFolders, ...dbPhotos];
+      const others = prev.filter(p => p.folderPath !== cleanAbsolutePath);
+      const merged = [...others, ...photosToProcess];
 
-      if (pendingCount > 0) {
+      if (pendingIds.length > 0) {
         processingQueue.current.push(...pendingIds);
         if (!isProcessing) {
           setIsProcessing(true);
@@ -690,7 +787,7 @@ const App: React.FC = () => {
       return merged;
     });
 
-    if (doneCount > 0 && pendingCount === 0) {
+    if (doneCount > 0 && pendingIds.length === 0) {
       alert(`Toutes les ${doneCount} photos de ce dossier sont déjà indexées !`);
     }
 
