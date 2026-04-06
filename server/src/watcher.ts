@@ -2,7 +2,7 @@ import { watch } from 'chokidar';
 import { statSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
-import { getDb } from './db.js';
+import { getDb, isNuking } from './db.js';
 
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']);
 const SCAN_INTERVAL_MS = 5 * 60 * 1000;
@@ -20,6 +20,8 @@ function getMimeType(filename: string): string {
 }
 
 function addPhotoSync(folderId: string, folderPath: string, fullPath: string): boolean {
+  if (isNuking()) return false;
+
   const db = getDb();
   const name = fullPath.split(/[/\\]/).pop() || fullPath;
 
@@ -38,6 +40,8 @@ function addPhotoSync(folderId: string, folderPath: string, fullPath: string): b
 }
 
 export async function scanFolder(folderId: string, folderPath: string): Promise<{ newPhotos: number }> {
+  if (isNuking()) return { newPhotos: 0 };
+
   const db = getDb();
   if (!existsSync(folderPath)) return { newPhotos: 0 };
 
@@ -73,29 +77,34 @@ export function startWatching(folderId: string, folderPath: string) {
   });
   watcher.on('add', (p: string) => addPhotoSync(folderId, folderPath, p));
   watcher.on('unlink', (p: string) => {
+    if (isNuking()) return;
     const name = p.split(/[\/\\]/).pop();
     if (name) getDb().prepare('DELETE FROM photos WHERE folder_path = @fp AND name = @n').run({ fp: folderPath, n: name });
   });
   watchers.set(folderId, watcher);
 }
 
-export function stopWatching(folderId: string) {
+export async function stopWatching(folderId: string) {
   const w = watchers.get(folderId);
-  if (w) { w.close(); watchers.delete(folderId); }
+  if (w) { await w.close(); watchers.delete(folderId); }
 }
 
-export function stopAllWatchers() {
-  for (const id of watchers.keys()) stopWatching(id);
+export async function stopAllWatchers() {
+  const promises: Promise<void>[] = [];
+  for (const id of watchers.keys()) {
+    promises.push(stopWatching(id));
+  }
+  await Promise.all(promises);
   if (periodicInterval) { clearInterval(periodicInterval); periodicInterval = null; }
 }
 
 /**
  * Stop all watchers AND the periodic interval, then clear the in-memory map.
- * Call this after a "Clear All Data" operation so chokidar cannot re-insert
- * photos into the freshly-emptied database.
+ * Awaits each watcher.close() so chokidar callbacks are fully drained
+ * before the database is nuked.
  */
-export function resetWatchers() {
-  stopAllWatchers();
+export async function resetWatchers() {
+  await stopAllWatchers();
   watchers.clear();
 }
 

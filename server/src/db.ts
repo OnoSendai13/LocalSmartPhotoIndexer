@@ -20,6 +20,9 @@ const dbPath = path.join(dataDir, 'photo-index.db');
 
 let _db: import('sql.js').Database | null = null;
 
+// Captured during initDb so we can create a fresh DB in nukeDb() without `require()`.
+let _SQLCtor: ReturnType<typeof import('sql.js').default> | null = null;
+
 /**
  * When true, save() is a no-op.  Set during nukeDb() so that any in-flight
  * watcher callback that calls save() after the clear does NOT overwrite the
@@ -68,30 +71,35 @@ export function nukeDb(): void {
   if (!_db) throw new Error('Database not initialized');
 
   const t = new Date().toISOString();
-  console.log(`[NUKE ${t}] Starting — will DELETE all rows then overwrite disk file`);
+  console.log(`[NUKE ${t}] Starting — full in-memory DB replacement`);
 
-  // Step 1: freeze all concurrent save() calls immediately
+  // Step 1: freeze save() + stash reference to old DB immediately
   _frozen = true;
+  const oldDb = _db;
 
   try {
-    // Step 2: delete every row from both tables (in-memory)
-    _db.run('DELETE FROM photos');
-    _db.run('DELETE FROM folders');
-    const photosLeft = (_db.exec('SELECT COUNT(*) FROM photos')[0]?.values[0][0] ?? -1);
-    const foldersLeft = (_db.exec('SELECT COUNT(*) FROM folders')[0]?.values[0][0] ?? -1);
-    console.log(`[NUKE] In-memory after DELETE: photos=${photosLeft}, folders=${foldersLeft}`);
+    // Step 2: DELETE in old DB (captures any in-flight inserts)
+    oldDb.run('DELETE FROM photos');
+    oldDb.run('DELETE FROM folders');
 
-    // Step 3: overwrite the disk file with the now-empty DB
+    // Step 3: create a brand-new empty DB and apply schema
+    const freshDb = new _SQLCtor!.Database();
+    _initSchema(freshDb);
+
+    // Step 4: replace _db BEFORE unfreezing so subsequent callbacks
+    // operate on a clean DB, not the old nuke target
+    _db = freshDb;
+
+    // Step 5: write the fresh empty DB to disk
     if (existsSync(dbPath)) unlinkSync(dbPath);
-    const data = _db.export();
+    const data = freshDb.export();
     writeFileSync(dbPath, Buffer.from(data));
     const sizeAfter = statSync(dbPath).size;
-    console.log(`[NUKE] ✅ Disk file rewritten (${sizeAfter} bytes). DB is empty.`);
+    console.log(`[NUKE] ✅ Disk file rewritten (${sizeAfter} bytes). DB is empty and new.`);
   } catch (e) {
     console.error('[NUKE] ❌ Failed:', e);
     throw e;
   } finally {
-    // Step 4: always unfreeze — server keeps running normally
     _frozen = false;
   }
 }
@@ -218,6 +226,7 @@ export async function initDb(): Promise<Database> {
     const initSqlJs = (await import('sql.js')).default;
     const wasmBinary = readFileSync(wasmPath);
     const SQL = await initSqlJs({ wasmBinary });
+    _SQLCtor = SQL;
 
     const fileBuffer = existsSync(dbPath) ? readFileSync(dbPath) : undefined;
     _db = new SQL.Database(fileBuffer ?? undefined);
@@ -282,6 +291,11 @@ function _initSchema(db: import('sql.js').Database): void {
       updated_at INTEGER NOT NULL DEFAULT (unixepoch('now'))
     )
   `);
+}
+
+/** Set to true during nukeDb() so concurrent operations can check and bail out. */
+export function isNuking(): boolean {
+  return _frozen;
 }
 
 export function closeDb(): void {

@@ -96,9 +96,8 @@ const App: React.FC = () => {
   const [folderPathModalState, setFolderPathModalState] = useState<{
     open: boolean;
     folderName: string;
-    suggestedPath: string;
     pendingFiles: FileList | null;
-  }>({ open: false, folderName: '', suggestedPath: '', pendingFiles: null });
+  }>({ open: false, folderName: '', pendingFiles: null });
 
   // Refresh folders from backend
   const refreshFolders = useCallback(async () => {
@@ -403,79 +402,63 @@ const App: React.FC = () => {
       return;
     }
 
+    // Skip RAW / unsupported formats — browsers cannot decode these for thumbnail generation
+    const RAW_EXTS = new Set(['.cr2','.cr3','.dng','.nef','.nrw','.arw','.srf','.orf',
+      '.rw2','.raf','.raw','.rwl','.pef','.srw','.x3f','.3fr','.iiq','.erf','.kdc',
+      '.dcr','.tif','.tiff','.psd','.psb']);
+    const ext = photo.name.slice(photo.name.lastIndexOf('.')).toLowerCase();
+    if (RAW_EXTS.has(ext)) {
+      console.log(`⏭️ [worker] Skipping unsupported format: ${photo.name} (${ext})`);
+      setPhotos(prev => prev.map(p => p.id === photoId ? { ...p, status: 'done' as const } : p));
+      return;
+    }
+
     console.log(`🔍 [worker] Processing: ${photo.name}`);
     setPhotos(prev => prev.map(p => p.id === photoId ? { ...p, status: 'processing' } : p));
     setCurrentProcessingPhoto(photo.name);
 
     try {
-      let base64Data: string;
       let mimeType: string;
-
       const hasRealFile = photo.file && photo.file.size > 0;
 
-      if (hasRealFile) {
-        // Case A — fresh file selected by the user
-        base64Data = await fileToBase64(photo.file!);
-        mimeType = photo.file!.type || 'image/jpeg';
-      } else {
-        // Case B — photo loaded from DB (file placeholder, size=0)
-        // Fetch the image from the backend preview endpoint and re-encode it.
-        console.log(`📡 Fetching preview from backend for ${photo.name}`);
-        const res = await fetch(`/api/photos/${encodeURIComponent(photo.id)}/preview`);
-        if (!res.ok) throw new Error(`Preview fetch failed: ${res.status}`);
-        const blob = await res.blob();
-        mimeType = blob.type || 'image/jpeg';
-        // Convert blob → base64 via FileReader
-        base64Data = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            const result = reader.result as string;
-            resolve(result.split(',')[1] || '');
-          };
-          reader.onerror = () => reject(new Error(`FileReader error for ${photo.name}`));
-          reader.readAsDataURL(blob);
-        });
+      // Step 1: Generate a thumbnail (~480px) FIRST — this is what we send to the LLM
+      // instead of the full original file (which can be 30MB+).
+      const thumbnailBase64 = await new Promise<string>((resolve) => {
+        const img = new Image();
+        const src = hasRealFile
+          ? URL.createObjectURL(photo.file!)
+          : `/api/photos/${encodeURIComponent(photo.id)}/preview`;
+        img.onload = () => {
+          const MAX = 480;
+          const ratio = Math.min(MAX / img.width, MAX / img.height, 1);
+          const w = Math.round(img.width * ratio);
+          const h = Math.round(img.height * ratio);
+          const canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(img, 0, 0, w, h);
+            resolve(canvas.toDataURL('image/jpeg', 0.88));
+            mimeType = 'image/jpeg';
+          } else {
+            resolve('');
+          }
+          if (hasRealFile) URL.revokeObjectURL(src);
+        };
+        img.onerror = () => { if (hasRealFile) URL.revokeObjectURL(src); resolve(''); };
+        img.src = src;
+      });
+
+      if (!thumbnailBase64) {
+        throw new Error(`Failed to generate thumbnail for ${photo.name}`);
       }
 
+      // Step 2: Send only the thumbnail (~30-80KB) to the LLM, not the full file.
+      const base64Data = thumbnailBase64.split(',')[1];
       const tags = await analyzeImage(base64Data, mimeType);
       console.log(`✅ Tags for ${photo.name}:`, tags);
-
-      // Generate a thumbnail for persistent preview (stored in DB).
-      // Works in BOTH cases:
-      //   A) hasRealFile → load from File blob via createObjectURL
-      //   B) !hasRealFile → load from the base64 we already fetched for the LLM
-      //      (the data: URL is already in memory — zero extra fetch needed)
-      let thumbnailBase64: string | undefined;
-      try {
-        thumbnailBase64 = await new Promise<string>((resolve) => {
-          const img = new Image();
-          // Case A: use object URL from the real file
-          // Case B: use the base64 data we already have (prepend data URI header)
-          const src = hasRealFile
-            ? URL.createObjectURL(photo.file!)
-            : `data:${mimeType};base64,${base64Data}`;
-          img.onload = () => {
-            const MAX = 480;
-            const ratio = Math.min(MAX / img.width, MAX / img.height, 1);
-            const w = Math.round(img.width * ratio);
-            const h = Math.round(img.height * ratio);
-            const canvas = document.createElement('canvas');
-            canvas.width = w; canvas.height = h;
-            const ctx = canvas.getContext('2d');
-            if (ctx) {
-              ctx.imageSmoothingEnabled = true;
-              ctx.imageSmoothingQuality = 'high';
-              ctx.drawImage(img, 0, 0, w, h);
-              resolve(canvas.toDataURL('image/jpeg', 0.88));
-            } else {
-              resolve('');
-            }
-            if (hasRealFile) URL.revokeObjectURL(src);
-          };
-          img.onerror = () => { if (hasRealFile) URL.revokeObjectURL(src); resolve(''); };
-          img.src = src;
-        });
-      } catch { thumbnailBase64 = undefined; }
 
       const updatedPhoto = {
         ...photo,
@@ -593,27 +576,12 @@ const App: React.FC = () => {
     const firstFile = files[0];
     const relativeFolderName = firstFile.webkitRelativePath?.split('/')[0] || 'Imported';
 
-    // Build an OS-aware suggested path using live system info from the backend
-    const suggestedPath = buildSuggestedPath(relativeFolderName);
-
-    // Open the modal — processing continues in handleFolderPathConfirm
+    // Open the modal — the modal queries the backend for real paths
     setFolderPathModalState({
       open: true,
       folderName: relativeFolderName,
-      suggestedPath,
       pendingFiles: files,
     });
-  };
-
-  /** Builds a platform-aware path suggestion, e.g. /home/alice/Photos/Vacation */
-  const buildSuggestedPath = (folderName: string): string => {
-    const { platform, homedir, sep } = systemInfo;
-    if (platform === 'win32') {
-      // Windows native path (backend running on Windows)
-      return `${homedir}${sep}Pictures${sep}${folderName}`;
-    }
-    // Linux / macOS / WSL
-    return `${homedir}/Photos/${folderName}`;
   };
 
   /**
@@ -937,6 +905,9 @@ const App: React.FC = () => {
         setIsLoading(true);
         setLoadingMessage('Suppression en cours…');
         await clearAllPhotos();
+        // Also clear the frontend File System Access handle so stale access
+        // doesn't trigger auto-rescan of the same folder after reload
+        await clearDirectoryHandle();
         // Server stays alive — nukeDb() wiped the DB in-place, no restart needed.
         window.location.reload();
       } catch (err) {
@@ -1474,7 +1445,6 @@ const App: React.FC = () => {
       {folderPathModalState.open && (
         <FolderPathModal
           folderName={folderPathModalState.folderName}
-          suggestedPath={folderPathModalState.suggestedPath}
           onConfirm={handleFolderPathConfirm}
         />
       )}

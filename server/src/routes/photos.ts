@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
-import { getDb, saveDb, nukeDb } from '../db.js';
+import { getDb, saveDb, nukeDb, isNuking } from '../db.js';
 import { writeTagsToFile } from '../exif.js';
 import { resetWatchers } from '../watcher.js';
 import path from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, unlinkSync } from 'fs';
 
 export const photosRouter = new Hono();
 
@@ -99,6 +99,7 @@ photosRouter.get('/photos/:id', (c) => {
 
 // PUT /api/photos/:id — update tags, status, error_message
 photosRouter.put('/photos/:id', async (c) => {
+  if (isNuking()) return c.json({ error: 'Operation blocked — database is being cleared' }, 503);
   const db = getDb();
   const body = await c.req.json();
   const id = c.req.param('id');
@@ -155,6 +156,7 @@ photosRouter.put('/photos/:id', async (c) => {
 // ensuring no duplicate rows regardless of whether the frontend uses DB UUIDs
 // or generated IDs (MODE B — path inaccessible).
 photosRouter.post('/photos', async (c) => {
+  if (isNuking()) return c.json({ error: 'Operation blocked — database is being cleared' }, 503);
   const db = getDb();
   const body = await c.req.json();
   const photos: Photo[] = Array.isArray(body) ? body : [body];
@@ -193,9 +195,15 @@ photosRouter.post('/photos', async (c) => {
 
   // Trigger EXIF write for any photos that are 'done' and have tags
   for (const item of photos) {
-    if (item.status === 'done' && item.tags && item.tags.length > 0 && item.path) {
-      const { writeTagsToFile } = await import('../exif.js');
-      void writeTagsToFile(item.path, item.tags);
+    if (item.status === 'done' && item.tags && item.tags.length > 0) {
+      let filePath = item.path;
+      if (!filePath || !existsSync(filePath)) {
+        filePath = path.join(item.folderPath, item.name);
+      }
+      if (filePath && existsSync(filePath)) {
+        const { writeTagsToFile } = await import('../exif.js');
+        void writeTagsToFile(filePath, item.tags);
+      }
     }
   }
 
@@ -294,6 +302,7 @@ photosRouter.get('/photos/:id/preview', (c) => {
 
 // POST /api/photos/import — bulk import from JSON backup
 photosRouter.post('/photos/import', async (c) => {
+  if (isNuking()) return c.json({ error: 'Operation blocked — database is being cleared' }, 503);
   const db = getDb();
   const body = await c.req.json<{ photos: Photo[]; settings?: Record<string, unknown> }>();
   let photosImported = 0;
@@ -329,24 +338,32 @@ photosRouter.post('/photos/import', async (c) => {
 });
 
 // DELETE /api/photos/all — wipe everything
-// Simplest possible approach: close DB, delete the file, exit the process.
-// tsx watch will restart automatically with a clean empty DB.
 photosRouter.delete('/photos/all', async (c) => {
-  console.log('[CLEAR] Nuclear clear — stopping watchers...');
+  console.log('[CLEAR] Nuclear clear starting...');
 
-  // 1. Stop all file watchers so no chokidar callback can re-insert photos
-  try { resetWatchers(); } catch (e) { console.warn('[CLEAR] resetWatchers:', e); }
+  try { await resetWatchers(); console.log('[CLEAR] Watchers stopped.'); } catch (e) { console.warn('[CLEAR] resetWatchers:', e); }
 
-  // 2. Nuke the DB: DELETE all rows + overwrite disk file (synchronous, no process.exit)
-  try {
-    nukeDb();
-    console.log('[CLEAR] ✅ DB nuked — all photos and folders deleted, file rewritten.');
-  } catch (e) {
-    console.error('[CLEAR] nukeDb failed:', e);
-    return c.json({ success: false, error: String(e) }, 500);
-  }
+  // Direct DELETE without transaction wrapper (avoids _inTransaction race)
+  const beforeCount = getDb().prepare('SELECT COUNT(*) as cnt FROM photos').get() as { cnt: number };
+  console.log(`[CLEAR] Before: ${beforeCount.cnt} photos`);
 
-  return c.json({ success: true });
+  getDb().prepare('DELETE FROM photos').run();
+  getDb().prepare('DELETE FROM folders').run();
+
+  const afterCount = getDb().prepare('SELECT COUNT(*) as cnt FROM photos').get() as { cnt: number };
+  console.log(`[CLEAR] After DELETE: ${afterCount.cnt} photos in memory`);
+
+  saveDb();
+  console.log('[CLEAR] saveDb() called');
+
+  // Verify disk
+  const { statSync } = await import('fs');
+  const { join } = await import('path');
+  const dbFile = join(process.cwd(), 'data', 'photo-index.db');
+  const diskSize = statSync(dbFile).size;
+  console.log(`[CLEAR] Disk file size: ${diskSize} bytes`);
+
+  return c.json({ success: true, message: "V2 - photos cleared", photosBefore: beforeCount.cnt, photosAfter: afterCount.cnt, diskSize });
 });
 
 // POST /api/photos/sync-exif
@@ -387,8 +404,11 @@ photosRouter.post('/photos/sync-exif', async (c) => {
   `);
 
   for (const row of rows) {
-    const filePath = row.path;
-    if (!existsSync(filePath)) { missing++; continue; }
+    let filePath = row.path;
+    if (!filePath || !existsSync(filePath)) {
+      filePath = path.join(row.folder_path, row.name);
+    }
+    if (!filePath || !existsSync(filePath)) { missing++; continue; }
 
     const dbTags: string[] = JSON.parse(row.tags || '[]');
     const hasDbTags = dbTags.length > 0;
@@ -442,10 +462,14 @@ photosRouter.post('/photos/rewrite-exif', async (c) => {
   let written = 0; let missing = 0;
 
   for (const row of rows) {
-    if (!existsSync(row.path)) { missing++; continue; }
+    let filePath = row.path;
+    if (!filePath || !existsSync(filePath)) {
+      filePath = path.join(row.folder_path, row.name);
+    }
+    if (!filePath || !existsSync(filePath)) { missing++; continue; }
     const tags: string[] = JSON.parse(row.tags || '[]');
     if (tags.length > 0) {
-      await writeTagsToFile(row.path, tags);
+      await writeTagsToFile(filePath, tags);
       written++;
     }
   }
