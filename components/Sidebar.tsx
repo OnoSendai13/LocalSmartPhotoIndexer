@@ -38,6 +38,16 @@ const CheckIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
 );
 
+// Play icon for starting indexing
+const PlayIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v14l11-7z"/></svg>
+);
+
+// Pause icon for pausing indexing
+const PauseIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
+);
+
 // Key icon for permission needed
 const KeyIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>
@@ -62,6 +72,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   selectedFolder,
   onSelectFolder,
   onAddFolder,
+  processingMode = 'auto',
+  onToggleProcessing,
+  pendingCount = 0,
+  connectionStatus = 'unknown',
 }) => {
   const percentComplete = totalPhotos > 0 ? Math.round((processedCount / totalPhotos) * 100) : 0;
 
@@ -229,6 +243,62 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         )}
       </div>
+
+      {/* Start/Pause button (manual mode) when there are pending photos */}
+      {processingMode === 'manual' && pendingCount > 0 && (
+        <div className="p-3 bg-zinc-900 border-t border-zinc-800">
+          <button
+            onClick={onToggleProcessing}
+            disabled={connectionStatus !== 'connected'}
+            title={connectionStatus !== 'connected' ? 'Connection to AI provider is not ready' : ''}
+            className={`w-full px-4 py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
+              isProcessing
+                ? 'bg-amber-600/80 hover:bg-amber-600 text-white'
+                : connectionStatus === 'connected'
+                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                  : 'bg-zinc-700 text-zinc-500 cursor-not-allowed'
+            }`}
+          >
+            {isProcessing ? (
+              <>
+                <PauseIcon />
+                Pause ({pendingCount} restantes)
+              </>
+            ) : (
+              <>
+                <PlayIcon />
+                Démarrer ({pendingCount} photos)
+              </>
+            )}
+          </button>
+          {connectionStatus !== 'connected' && (
+            <p className="text-[10px] text-amber-500 mt-1 text-center">
+              ⚠️ AI provider not connected
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Auto mode indicator */}
+      {processingMode === 'auto' && pendingCount > 0 && (
+        <div className="p-3 bg-zinc-900 border-t border-zinc-800">
+          <div className="flex items-center justify-between text-xs text-zinc-400">
+            <span>
+              {isProcessing ? '▶ Indexation auto...' : '⏳ En attente ({pendingCount})'}
+            </span>
+          </div>
+          <button
+            onClick={onToggleProcessing}
+            className={`w-full mt-1 px-3 py-1.5 rounded text-xs transition-colors ${
+              isProcessing
+                ? 'bg-amber-600/20 hover:bg-amber-600/40 text-amber-400'
+                : 'bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400'
+            }`}
+          >
+            {isProcessing ? '⏸ Pause' : '▶ Relancer maintenant'}
+          </button>
+        </div>
+      )}
 
       {isProcessing && (
         <div className="p-4 bg-zinc-900 border-t border-zinc-800">

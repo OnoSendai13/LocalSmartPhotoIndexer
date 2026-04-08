@@ -56,6 +56,11 @@ export interface SidebarProps {
   selectedFolder?: string | null;
   onSelectFolder?: (folderPath: string | null) => void;
   onAddFolder?: () => void;
+  // Indexing mode
+  processingMode?: 'auto' | 'manual';
+  onToggleProcessing?: () => void;
+  pendingCount?: number;
+  connectionStatus?: 'unknown' | 'connected' | 'error';
 }
 
 // Photo grid component props

@@ -279,6 +279,23 @@ export async function probeFolder(path: string): Promise<FolderProbeResult> {
   return res.json();
 }
 
+export interface FolderSearchResult {
+  folderName: string;
+  platform: string;
+  homedir: string;
+  validPaths: string[];
+}
+
+export async function searchFolderPaths(folderName: string): Promise<FolderSearchResult> {
+  const res = await fetch(`${API_BASE}/folders/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ folderName }),
+  });
+  if (!res.ok) throw new Error(`POST /folders/search failed (${res.status})`);
+  return res.json();
+}
+
 // ─── Backup / Restore ─────────────────────────────────────────────────────────
 
 export async function exportData(): Promise<string> {

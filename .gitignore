@@ -28,3 +28,4 @@ server/data/
 *.db
 *.sqlite
 *.sqlite3
+.gitnexus
