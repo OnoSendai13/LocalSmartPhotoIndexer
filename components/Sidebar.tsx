@@ -78,6 +78,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   connectionStatus = 'unknown',
 }) => {
   const percentComplete = totalPhotos > 0 ? Math.round((processedCount / totalPhotos) * 100) : 0;
+  const pendingPhotos = totalPhotos - processedCount;
 
   return (
     <div className="w-64 bg-zinc-900 border-r border-zinc-800 flex flex-col h-full shrink-0">
@@ -283,7 +284,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       {/* Start button when idle and there are pending photos */}
-      {processingStatus && processingStatus.status === 'idle' && processingStatus.total > 0 && (
+      {processingStatus && processingStatus.status === 'idle' && pendingPhotos > 0 && (
         <div className="p-3 bg-zinc-900 border-t border-zinc-800">
           <button
             onClick={onStartProcessing}
@@ -296,7 +297,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             }`}
           >
             <PlayIcon />
-            Start Indexing ({processingStatus.total} pending)
+            Start Indexing ({pendingPhotos} pending)
           </button>
           {connectionStatus !== 'connected' && (
             <p className="text-[10px] text-amber-500 mt-1 text-center">
@@ -307,7 +308,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       {/* Idle state with no pending photos */}
-      {processingStatus && processingStatus.status === 'idle' && processingStatus.total === 0 && (
+      {processingStatus && processingStatus.status === 'idle' && pendingPhotos === 0 && (
         <div className="p-3 bg-zinc-900 border-t border-zinc-800 text-center">
           {processingStatus.done > 0 ? (
             <p className="text-xs text-emerald-400">
