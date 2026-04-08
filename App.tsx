@@ -539,11 +539,17 @@ const App: React.FC = () => {
 
       // Resolve absolute path for backend (EXIF write + preview)
       const absoluteFolderPath = updatedPhoto.absoluteFolderPath || updatedPhoto.folderPath || '';
-      const absoluteFilePath = absoluteFolderPath
-        ? (updatedPhoto.path?.startsWith('/')
-            ? updatedPhoto.path
-            : absoluteFolderPath + '/' + (updatedPhoto.path?.split('/').pop() || updatedPhoto.name))
-        : (updatedPhoto.path || '');
+      let absoluteFilePath = updatedPhoto.path || '';
+      if (absoluteFolderPath && absoluteFilePath) {
+        // Extract just the filename from the path (handle both / and \ separators)
+        const fileName = absoluteFilePath.split(/[\\/]/).pop() || updatedPhoto.name;
+        // Use path.join for proper cross-platform path construction
+        absoluteFilePath = absoluteFolderPath.includes('\\')
+          ? `${absoluteFolderPath}\\${fileName}`
+          : `${absoluteFolderPath}/${fileName}`;
+      } else if (absoluteFolderPath) {
+        absoluteFilePath = absoluteFolderPath;
+      }
 
       const storedPhoto: StoredPhoto = {
         id: updatedPhoto.id,
