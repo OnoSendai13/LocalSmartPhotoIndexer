@@ -234,6 +234,39 @@ const App: React.FC = () => {
     checkConnection();
   }, []);
 
+  // ── Screen Wake Lock: prevent sleep throttling during indexing ──────────────
+  // When the screen sleeps, browsers throttle timers and network requests,
+  // effectively freezing the indexing queue. Wake Lock keeps the CPU active.
+  useEffect(() => {
+    let wakeLock: WakeLockSentinel | null = null;
+
+    const requestWakeLock = async () => {
+      try {
+        if ('wakeLock' in navigator) {
+          wakeLock = await navigator.wakeLock.request('screen');
+          console.log('✅ Screen wake lock acquired — indexing continues even if screen sleeps');
+        }
+      } catch (err) {
+        console.warn('⚠️ Wake lock unavailable:', err);
+      }
+    };
+
+    requestWakeLock();
+
+    // Re-acquire when page becomes visible again (e.g. after waking from sleep)
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && !wakeLock) {
+        requestWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      if (wakeLock) wakeLock.release();
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, []);
+
   // ── Auto-resume pending photos once AI connection is confirmed ─────────────
   // Only in 'auto' mode. Reset hasAutoResumed when photos are reloaded from DB
   // so that a server restart can trigger indexing again.
