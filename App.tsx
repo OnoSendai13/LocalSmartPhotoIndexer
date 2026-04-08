@@ -11,6 +11,7 @@ const API_BASE = '/api';
 
 import {
   savePhoto,
+  savePhotos,
   getAllPhotos,
   getSettings,
   saveSettings,
@@ -62,10 +63,17 @@ const App: React.FC = () => {
 
   // Processing State
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingMode, setProcessingMode] = useState<'auto' | 'manual'>('auto');
+  const pendingCount = photos.filter(p => p.status === 'pending').length;
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, currentFile: '' });
   const [currentProcessingPhoto, setCurrentProcessingPhoto] = useState<string>('');
   const processingQueue = useRef<string[]>([]);
+  const batchBufferRef = useRef<StoredPhoto[]>([]);
+  const BATCH_SIZE = 50;
+  const processedCountRef = useRef(0);
+  const totalCountRef = useRef(0);
+  const [processingProgress, setProcessingProgress] = useState({ done: 0, total: 0, percent: 0 });
   const [tagInput, setTagInput] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   
@@ -227,12 +235,22 @@ const App: React.FC = () => {
   }, []);
 
   // ── Auto-resume pending photos once AI connection is confirmed ─────────────
-  // When the app starts with pending photos in the queue AND the connection is
-  // established, kick off the parallel workers automatically.
-  // We use a ref to avoid triggering on every re-render.
+  // Only in 'auto' mode. Reset hasAutoResumed when photos are reloaded from DB
+  // so that a server restart can trigger indexing again.
   const hasAutoResumed = useRef(false);
+  const photosLoadedRef = useRef(false);
+
+  // Reset resume flag when photos are freshly loaded (avoids stale flag after restart)
+  useEffect(() => {
+    if (photos.length > 0 && !photosLoadedRef.current) {
+      photosLoadedRef.current = true;
+      hasAutoResumed.current = false;
+    }
+  }, [photos.length]);
+
   useEffect(() => {
     if (
+      processingMode === 'auto' &&
       connectionStatus === 'connected' &&
       !isProcessing &&
       processingQueue.current.length > 0 &&
@@ -243,12 +261,49 @@ const App: React.FC = () => {
       setIsProcessing(true);
       setTimeout(() => processQueueWithPhotos(), 0);
     }
-  }, [connectionStatus]);
+  }, [connectionStatus, photos.length, processingMode]);
+
+  // ── Manual toggle handler ──────────────────────────────────────────────────
+  const handleToggleProcessing = useCallback(() => {
+    if (isProcessing) {
+      setIsProcessing(false);
+    } else {
+      // Fill queue with all pending photos
+      const pending = photosRef.current.filter(p => p.status === 'pending').map(p => p.id);
+      if (pending.length === 0) return;
+      processingQueue.current = pending;
+      console.log(`▶️ Manual start: ${pending.length} pending photos...`);
+      setIsProcessing(true);
+      setTimeout(() => processQueueWithPhotos(), 0);
+    }
+  }, [isProcessing]);
 
   // Check connection when settings change
   useEffect(() => {
     checkConnection();
   }, [settings.provider, settings.ollamaUrl, settings.openrouterApiKey, settings.geminiApiKey]);
+
+  // Auto-retry connection every 30s if in error state and there are pending photos
+  useEffect(() => {
+    if (connectionStatus !== 'error') return;
+    if (processingMode !== 'auto') return;
+
+    const savedPhotos = photosRef.current;
+    const hasPending = savedPhotos.some(p => p.status === 'pending');
+    if (!hasPending && processingQueue.current.length === 0) return;
+
+    console.log('⏱️ Setting up connection retry every 30s...');
+    const interval = setInterval(async () => {
+      console.log('🔄 Auto-retrying connection...');
+      const ok = await checkConnection();
+      if (ok) {
+        console.log('✅ Connection restored!');
+        clearInterval(interval);
+      }
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [connectionStatus, processingMode]);
 
   const checkConnection = async () => {
     console.log(`🔄 Checking connection for provider: ${settings.provider}`);
@@ -375,12 +430,12 @@ const App: React.FC = () => {
 
   /**
    * How many photos to analyse in parallel.
-   * - Ollama (local GPU): 2 workers saturates VRAM without thrashing.
+   * - Ollama (local GPU): 4 workers for better GPU utilization (MiniCPM-V ~8GB each).
    * - Cloud APIs (OpenRouter / Gemini): 3 workers (rate-limit permitting).
    */
-  const concurrencyRef = useRef(2);
+  const concurrencyRef = useRef(4);
   useEffect(() => {
-    concurrencyRef.current = settings.provider === 'ollama' ? 2 : 3;
+    concurrencyRef.current = settings.provider === 'ollama' ? 4 : 3;
   }, [settings.provider]);
 
   /** Number of active parallel workers */
@@ -416,6 +471,16 @@ const App: React.FC = () => {
     console.log(`🔍 [worker] Processing: ${photo.name}`);
     setPhotos(prev => prev.map(p => p.id === photoId ? { ...p, status: 'processing' } : p));
     setCurrentProcessingPhoto(photo.name);
+
+    // Update progress counter
+    processedCountRef.current += 1;
+    const pct = totalCountRef.current > 0
+      ? ((processedCountRef.current / totalCountRef.current) * 100).toFixed(1)
+      : '0.0';
+    setProcessingProgress({ done: processedCountRef.current, total: totalCountRef.current, percent: parseFloat(pct) });
+    if (processedCountRef.current % 10 === 0 || processedCountRef.current === totalCountRef.current) {
+      console.log(`📊 Progress: ${processedCountRef.current}/${totalCountRef.current} (${pct}%)`);
+    }
 
     try {
       let mimeType: string;
@@ -493,8 +558,13 @@ const App: React.FC = () => {
         status: 'done',
         indexedAt: Date.now(),
       };
-      await savePhoto(storedPhoto);
-      console.log(`💾 Saved: ${photo.name} → ${absoluteFilePath}`);
+
+      // Batch DB writes — flush every BATCH_SIZE photos to reduce disk I/O
+      batchBufferRef.current.push(storedPhoto);
+      if (batchBufferRef.current.length >= BATCH_SIZE) {
+        await flushPhotoBatch();
+      }
+      console.log(`💾 Buffered: ${photo.name} → ${absoluteFilePath} (batch: ${batchBufferRef.current.length}/${BATCH_SIZE})`);
 
     } catch (error) {
       console.error(`❌ Failed: ${photo.name}`, error);
@@ -504,6 +574,15 @@ const App: React.FC = () => {
     }
   };
 
+  /** Flush any remaining photos in the batch buffer to the database. */
+  const flushPhotoBatch = async () => {
+    if (batchBufferRef.current.length === 0) return;
+    const batch = batchBufferRef.current;
+    batchBufferRef.current = [];
+    await savePhotos(batch);
+    console.log(`💾 Flushed batch of ${batch.length} photos to DB`);
+  };
+
   /**
    * Drain the queue, spawning up to CONCURRENCY parallel workers.
    * Safe to call multiple times — extra calls become no-ops when workers
@@ -511,6 +590,12 @@ const App: React.FC = () => {
    */
   const processQueueWithPhotos = async (initialPhotos?: Photo[]) => {
     if (initialPhotos) photosRef.current = initialPhotos;
+
+    // Initialize progress counters
+    totalCountRef.current = processingQueue.current.length;
+    processedCountRef.current = 0;
+    setProcessingProgress({ done: 0, total: totalCountRef.current, percent: 0 });
+    console.log(`🚀 Starting processing of ${totalCountRef.current} photos with ${concurrencyRef.current} workers...`);
 
     // Drain loop: each worker keeps pulling until the queue is empty
     const runWorker = async () => {
@@ -524,6 +609,8 @@ const App: React.FC = () => {
       } finally {
         activeWorkers.current -= 1;
         if (activeWorkers.current === 0) {
+          // Flush any remaining buffered photos before marking complete
+          await flushPhotoBatch();
           setIsProcessing(false);
           setCurrentProcessingPhoto('');
           console.log('✅ All processing complete!');
@@ -1487,6 +1574,10 @@ const App: React.FC = () => {
           setSelectedFolder(path);
         }}
         onAddFolder={handleLinkFolder}
+        processingMode={processingMode}
+        onToggleProcessing={handleToggleProcessing}
+        pendingCount={pendingCount}
+        connectionStatus={connectionStatus}
       />
 
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
@@ -1591,8 +1682,37 @@ const App: React.FC = () => {
                   <p className="text-[10px] text-zinc-500 mt-2">
                     {settings.provider === 'ollama' && 'Local processing - your data stays on your machine'}
                     {settings.provider === 'openrouter' && 'Cloud API - access to GPT-4V, Claude, etc.'}
-                    {settings.provider === 'gemini' && 'Google Cloud - free tier available'}
+                    {settings.provider === 'gemini' && 'Google Cloud API - Gemini Flash/Pro'}
                   </p>
+                </div>
+
+                {/* Indexing Mode */}
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-2">Indexing Mode</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => setProcessingMode('auto')}
+                      className={`p-3 rounded-lg border text-sm font-medium transition-all ${
+                        processingMode === 'auto'
+                          ? 'bg-emerald-600/20 border-emerald-500 text-emerald-300'
+                          : 'bg-zinc-800/50 border-zinc-700 text-zinc-400 hover:border-zinc-600'
+                      }`}
+                    >
+                      ▶ Auto
+                      <div className="text-[10px] text-zinc-500 mt-1">Starts when AI is connected</div>
+                    </button>
+                    <button
+                      onClick={() => setProcessingMode('manual')}
+                      className={`p-3 rounded-lg border text-sm font-medium transition-all ${
+                        processingMode === 'manual'
+                          ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300'
+                          : 'bg-zinc-800/50 border-zinc-700 text-zinc-400 hover:border-zinc-600'
+                      }`}
+                    >
+                      ✋ Manual
+                      <div className="text-[10px] text-zinc-500 mt-1">Click to start in sidebar</div>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Connection Status */}

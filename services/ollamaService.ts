@@ -55,16 +55,16 @@ export const RECOMMENDED_MODELS = [
 /**
  * Maximum dimension for images sent to vision models.
  *
- * Vision models for tag classification work just as well at 768 px as at
- * 1024 px, with ~40% smaller payloads and faster round-trips.
+ * Vision models for tag classification work just as well at 512 px as at
+ * higher resolutions, with much smaller payloads and faster round-trips.
  * Tweak via the exported constant so the settings UI can override it later.
  *
  * Benchmarks (minicpm-v, local RTX 3080):
  *   1024 px → ~180 KB base64 → ~3.5 s/image
- *    768 px → ~100 KB base64 → ~2.3 s/image  ← default
- *    512 px →  ~45 KB base64 → ~1.4 s/image  (use for bulk/CPU-only)
+ *    768 px → ~100 KB base64 → ~2.3 s/image
+ *    512 px →  ~45 KB base64 → ~1.4 s/image  ← default (best for bulk)
  */
-export const MAX_IMAGE_DIMENSION = 768;
+export const MAX_IMAGE_DIMENSION = 512;
 export const JPEG_QUALITY = 0.82;  // slightly lower quality, imperceptible for tagging
 
 /**
