@@ -72,9 +72,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   selectedFolder,
   onSelectFolder,
   onAddFolder,
-  processingMode = 'auto',
-  onToggleProcessing,
-  pendingCount = 0,
+  processingStatus,
+  onStartProcessing,
+  onStopProcessing,
   connectionStatus = 'unknown',
 }) => {
   const percentComplete = totalPhotos > 0 ? Math.round((processedCount / totalPhotos) * 100) : 0;
@@ -244,32 +244,59 @@ export const Sidebar: React.FC<SidebarProps> = ({
         )}
       </div>
 
-      {/* Start/Pause button (manual mode) when there are pending photos */}
-      {processingMode === 'manual' && pendingCount > 0 && (
+      {/* Backend processing controls */}
+      {processingStatus && processingStatus.status !== 'idle' && (
+        <div className="p-4 bg-zinc-900 border-t border-zinc-800">
+          <div className="flex items-center justify-between mb-2 text-sm text-indigo-400">
+            <div className="flex items-center gap-2">
+              <LoaderIcon />
+              <span>
+                {processingStatus.status === 'stopping' ? 'Stopping...' : 'Indexing...'}
+              </span>
+            </div>
+            <span>{processingStatus.percent}%</span>
+          </div>
+          <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-indigo-500 transition-all duration-300 ease-out"
+              style={{ width: `${processingStatus.percent}%` }}
+            />
+          </div>
+          <p className="text-xs text-zinc-500 mt-2">
+            {processingStatus.done} / {processingStatus.total} photos
+          </p>
+          {processingStatus.currentPhoto && (
+            <p className="text-[10px] text-zinc-600 mt-1 truncate" title={processingStatus.currentPhoto}>
+              → {processingStatus.currentPhoto}
+            </p>
+          )}
+          {processingStatus.status === 'running' && onStopProcessing && (
+            <button
+              onClick={onStopProcessing}
+              className="w-full mt-3 px-3 py-1.5 rounded text-xs bg-amber-600/20 hover:bg-amber-600/40 text-amber-400 transition-colors flex items-center justify-center gap-1"
+            >
+              <PauseIcon />
+              Stop
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Start button when idle and there are pending photos */}
+      {processingStatus && processingStatus.status === 'idle' && processingStatus.total > 0 && (
         <div className="p-3 bg-zinc-900 border-t border-zinc-800">
           <button
-            onClick={onToggleProcessing}
+            onClick={onStartProcessing}
             disabled={connectionStatus !== 'connected'}
-            title={connectionStatus !== 'connected' ? 'Connection to AI provider is not ready' : ''}
+            title={connectionStatus !== 'connected' ? 'AI provider not connected' : ''}
             className={`w-full px-4 py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
-              isProcessing
-                ? 'bg-amber-600/80 hover:bg-amber-600 text-white'
-                : connectionStatus === 'connected'
-                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                  : 'bg-zinc-700 text-zinc-500 cursor-not-allowed'
+              connectionStatus === 'connected'
+                ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                : 'bg-zinc-700 text-zinc-500 cursor-not-allowed'
             }`}
           >
-            {isProcessing ? (
-              <>
-                <PauseIcon />
-                Pause ({pendingCount} restantes)
-              </>
-            ) : (
-              <>
-                <PlayIcon />
-                Démarrer ({pendingCount} photos)
-              </>
-            )}
+            <PlayIcon />
+            Start Indexing ({processingStatus.total} pending)
           </button>
           {connectionStatus !== 'connected' && (
             <p className="text-[10px] text-amber-500 mt-1 text-center">
@@ -279,44 +306,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       )}
 
-      {/* Auto mode indicator */}
-      {processingMode === 'auto' && pendingCount > 0 && (
-        <div className="p-3 bg-zinc-900 border-t border-zinc-800">
-          <div className="flex items-center justify-between text-xs text-zinc-400">
-            <span>
-              {isProcessing ? '▶ Indexation auto...' : '⏳ En attente ({pendingCount})'}
-            </span>
-          </div>
-          <button
-            onClick={onToggleProcessing}
-            className={`w-full mt-1 px-3 py-1.5 rounded text-xs transition-colors ${
-              isProcessing
-                ? 'bg-amber-600/20 hover:bg-amber-600/40 text-amber-400'
-                : 'bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400'
-            }`}
-          >
-            {isProcessing ? '⏸ Pause' : '▶ Relancer maintenant'}
-          </button>
-        </div>
-      )}
-
-      {isProcessing && (
-        <div className="p-4 bg-zinc-900 border-t border-zinc-800">
-          <div className="flex items-center justify-between mb-2 text-sm text-indigo-400">
-            <div className="flex items-center gap-2">
-              <LoaderIcon />
-              <span>Indexing...</span>
-            </div>
-            <span>{percentComplete}%</span>
-          </div>
-          <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
-            <div 
-              className="h-full bg-indigo-500 transition-all duration-300 ease-out"
-              style={{ width: `${percentComplete}%` }}
-            />
-          </div>
-          <p className="text-xs text-zinc-500 mt-2">
-            Analyzed {processedCount} of {totalPhotos}
+      {/* Idle state with no pending photos */}
+      {processingStatus && processingStatus.status === 'idle' && processingStatus.total === 0 && processingStatus.done > 0 && (
+        <div className="p-3 bg-zinc-900 border-t border-zinc-800 text-center">
+          <p className="text-xs text-emerald-400">
+            ✅ All {processingStatus.done} photos indexed
           </p>
         </div>
       )}

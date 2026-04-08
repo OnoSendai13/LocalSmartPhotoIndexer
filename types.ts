@@ -34,6 +34,16 @@ export interface Category {
 // View mode for photo display
 export type ViewMode = 'grid' | 'detail';
 
+// Backend processing status (from GET /api/process/status)
+export interface ProcessingStatus {
+  status: 'idle' | 'running' | 'stopping';
+  done: number;
+  total: number;
+  percent: number;
+  currentPhoto: string;
+  startTime: number | null;
+}
+
 // Sidebar component props
 export interface SidebarProps {
   categories: Category[];
@@ -56,10 +66,10 @@ export interface SidebarProps {
   selectedFolder?: string | null;
   onSelectFolder?: (folderPath: string | null) => void;
   onAddFolder?: () => void;
-  // Indexing mode
-  processingMode?: 'auto' | 'manual';
-  onToggleProcessing?: () => void;
-  pendingCount?: number;
+  // Backend processing control
+  processingStatus?: ProcessingStatus | null;
+  onStartProcessing?: () => void;
+  onStopProcessing?: () => void;
   connectionStatus?: 'unknown' | 'connected' | 'error';
 }
 

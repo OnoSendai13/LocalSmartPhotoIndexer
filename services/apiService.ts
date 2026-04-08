@@ -227,6 +227,41 @@ export async function checkApiHealth(): Promise<boolean> {
   }
 }
 
+// ─── Processing Control ──────────────────────────────────────────────────────
+
+export interface ProcessingStatus {
+  status: 'idle' | 'running' | 'stopping';
+  done: number;
+  total: number;
+  percent: number;
+  currentPhoto: string;
+  startTime: number | null;
+}
+
+export async function startProcessing(): Promise<{ success: true; total: number }> {
+  const res = await fetch(`${API_BASE}/process/start`, { method: 'POST' });
+  if (!res.ok) throw new Error(`POST /process/start failed: ${res.status}`);
+  return res.json();
+}
+
+export async function stopProcessing(): Promise<{ success: true; done: number; total: number }> {
+  const res = await fetch(`${API_BASE}/process/stop`, { method: 'POST' });
+  if (!res.ok) throw new Error(`POST /process/stop failed: ${res.status}`);
+  return res.json();
+}
+
+export async function getProcessingStatus(): Promise<ProcessingStatus> {
+  const res = await fetch(`${API_BASE}/process/status`);
+  if (!res.ok) throw new Error(`GET /process/status failed: ${res.status}`);
+  return res.json();
+}
+
+export async function resetAllPhotos(): Promise<{ success: true; reset: number }> {
+  const res = await fetch(`${API_BASE}/process/reset`, { method: 'POST' });
+  if (!res.ok) throw new Error(`POST /process/reset failed: ${res.status}`);
+  return res.json();
+}
+
 export interface FolderInfo {
   id: string;
   name: string;

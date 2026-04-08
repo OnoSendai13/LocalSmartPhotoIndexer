@@ -4,9 +4,11 @@ import { cors } from 'hono/cors';
 import * as net from 'net';
 import { execSync } from 'child_process';
 import { initDb, closeDb } from './db.js';
+import * as processor from './processor.js';
 import { photosRouter } from './routes/photos.js';
 import { foldersRouter } from './routes/folders.js';
 import { settingsRouter } from './routes/settings.js';
+import { processorRouter } from './routes/processor.js';
 import { startAllWatchers, startPeriodicScans, stopAllWatchers } from './watcher.js';
 
 /** Check if a port is in use, and optionally free it using PowerShell/taskkill.
@@ -69,6 +71,7 @@ app.use('/*', cors({
 app.route('/api', photosRouter);
 app.route('/api', foldersRouter);
 app.route('/api', settingsRouter);
+app.route('/api', processorRouter);
 
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok' }));
@@ -148,6 +151,7 @@ async function start() {
 }
 
 function shutdown() {
+  processor.stopProcessing();
   stopAllWatchers();
   closeDb();
   process.exit(0);

@@ -29,6 +29,10 @@ import {
   rewriteExifTags,
   SystemInfo,
   Photo as StoredPhoto,
+  startProcessing,
+  stopProcessing,
+  getProcessingStatus,
+  ProcessingStatus,
 } from './services/apiService';
 import {
   isFileSystemAccessSupported,
@@ -74,6 +78,9 @@ const App: React.FC = () => {
   const processedCountRef = useRef(0);
   const totalCountRef = useRef(0);
   const [processingProgress, setProcessingProgress] = useState({ done: 0, total: 0, percent: 0 });
+
+  // Backend processing status (polling)
+  const [processingStatus, setProcessingStatus] = useState<ProcessingStatus | null>(null);
   const [tagInput, setTagInput] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   
@@ -260,7 +267,7 @@ const App: React.FC = () => {
           await requestWakeLock();
         }
         // After sleep, connection may be stale — force a re-check
-        if (connectionStatus === 'error' || connectionStatus === 'disconnected') {
+        if (connectionStatus === 'error') {
           console.log('🔄 Page visible after sleep — forcing connection re-check...');
           await checkConnection();
         }
@@ -318,6 +325,25 @@ const App: React.FC = () => {
     }
   }, [isProcessing]);
 
+  // ── Backend processing handlers ────────────────────────────────────────────
+  const handleStartProcessing = useCallback(async () => {
+    try {
+      await startProcessing();
+      console.log('▶️ Backend processing started');
+    } catch (err) {
+      console.error('Failed to start backend processing:', err);
+    }
+  }, []);
+
+  const handleStopProcessing = useCallback(async () => {
+    try {
+      await stopProcessing();
+      console.log('⏹ Backend processing stopped');
+    } catch (err) {
+      console.error('Failed to stop backend processing:', err);
+    }
+  }, []);
+
   // Check connection when settings change
   useEffect(() => {
     checkConnection();
@@ -344,6 +370,43 @@ const App: React.FC = () => {
 
     return () => clearInterval(interval);
   }, [connectionStatus, processingMode]);
+
+  // ── Poll backend processing status every 2s ────────────────────────────────
+  useEffect(() => {
+    const pollStatus = async () => {
+      try {
+        const status = await getProcessingStatus();
+        setProcessingStatus(status);
+
+        // Refresh photos list when backend finishes processing
+        if (status.status === 'idle' && status.done > 0 && photos.some(p => p.status === 'pending')) {
+          console.log('🔄 Backend finished — refreshing photos list...');
+          const savedPhotos = await getAllPhotos();
+          const loadedPhotos = savedPhotos.map(sp => ({
+            id: sp.id,
+            file: new File([], sp.name),
+            previewUrl: sp.thumbnail || '',
+            name: sp.name,
+            path: sp.path,
+            folderPath: sp.folderPath,
+            absoluteFolderPath: sp.folderPath,
+            tags: sp.tags,
+            thumbnail: sp.thumbnail,
+            status: sp.status,
+            indexedAt: sp.indexedAt,
+          }));
+          setPhotos(loadedPhotos);
+          refreshFolders();
+        }
+      } catch {
+        // Silently ignore polling errors
+      }
+    };
+
+    pollStatus();
+    const interval = setInterval(pollStatus, 2000);
+    return () => clearInterval(interval);
+  }, []);
 
   const checkConnection = async () => {
     console.log(`🔄 Checking connection for provider: ${settings.provider}`);
@@ -1620,9 +1683,9 @@ const App: React.FC = () => {
           setSelectedFolder(path);
         }}
         onAddFolder={handleLinkFolder}
-        processingMode={processingMode}
-        onToggleProcessing={handleToggleProcessing}
-        pendingCount={pendingCount}
+        processingStatus={processingStatus}
+        onStartProcessing={handleStartProcessing}
+        onStopProcessing={handleStopProcessing}
         connectionStatus={connectionStatus}
       />
 

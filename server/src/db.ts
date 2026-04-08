@@ -291,6 +291,14 @@ function _initSchema(db: import('sql.js').Database): void {
       updated_at INTEGER NOT NULL DEFAULT (unixepoch('now'))
     )
   `);
+  // Processing state for background indexing (survives server restarts)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS processing_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch('now'))
+    )
+  `);
 }
 
 /** Set to true during nukeDb() so concurrent operations can check and bail out. */
@@ -305,4 +313,78 @@ export function closeDb(): void {
     _db = null;
     console.log('SQLite (sql.js) closed');
   }
+}
+
+// ─── Processing State ──────────────────────────────────────────────────────────
+
+export interface ProcessingState {
+  status: 'idle' | 'running' | 'stopping';
+  done: number;
+  total: number;
+  currentPhoto: string;
+  startTime: number | null;
+}
+
+const DEFAULT_STATE: ProcessingState = {
+  status: 'idle',
+  done: 0,
+  total: 0,
+  currentPhoto: '',
+  startTime: null,
+};
+
+/**
+ * Save processing state to the database.
+ */
+export function saveProcessingState(state: Partial<ProcessingState>): void {
+  const db = getDb();
+  const now = Math.floor(Date.now() / 1000);
+
+  const existing = db.prepare('SELECT key FROM processing_state').all();
+  const rows = existing.map(r => (r as { key: string }).key);
+
+  const entries = Object.entries(state) as [keyof ProcessingState, unknown][];
+  for (const [key, value] of entries) {
+    const dbKey = `processing_${key}`;
+    const dbValue = typeof value === 'string' ? value : JSON.stringify(value);
+
+    if (rows.includes(dbKey)) {
+      db.prepare('UPDATE processing_state SET value = @value, updated_at = @now WHERE key = @key').run({ value: dbValue, now, key: dbKey });
+    } else {
+      db.prepare('INSERT INTO processing_state (key, value, updated_at) VALUES (@key, @value, @now)').run({ key: dbKey, value: dbValue, now });
+      rows.push(dbKey);
+    }
+  }
+
+  saveDb();
+}
+
+/**
+ * Load processing state from the database.
+ */
+export function loadProcessingState(): ProcessingState {
+  const db = getDb();
+  const rows = db.prepare('SELECT key, value FROM processing_state WHERE key LIKE @pattern').all({ pattern: 'processing_%' });
+  const state: Record<string, string> = {};
+
+  for (const row of rows) {
+    const r = row as { key: string; value: string };
+    const field = r.key.replace('processing_', '');
+    state[field] = r.value;
+  }
+
+  return {
+    status: (state.status as ProcessingState['status']) || 'idle',
+    done: parseInt(state.done || '0', 10),
+    total: parseInt(state.total || '0', 10),
+    currentPhoto: state.currentPhoto || '',
+    startTime: state.startTime ? parseInt(state.startTime, 10) : null,
+  };
+}
+
+/**
+ * Reset processing state to idle.
+ */
+export function resetProcessingState(): void {
+  saveProcessingState(DEFAULT_STATE);
 }
