@@ -198,8 +198,9 @@ const App: React.FC = () => {
               // Files will be linked when needed (rescan, preview, etc.)
             }
           } else {
-            console.log('📂 No saved folder found - use "Select Folder" to connect');
-            setFolderStatus('none');
+            // File System Access API n'a pas de handle persisté, mais le folder peut être
+            // connecté côté backend via SQLite. On verra dans rafraîchFolders().
+            console.log('📂 Pas d\'accès File System API persisté (le folder backend peut être connecté)');
           }
         } else {
           console.log('⚠️ File System Access API not supported (use Chrome/Edge)');

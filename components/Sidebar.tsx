@@ -307,11 +307,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       {/* Idle state with no pending photos */}
-      {processingStatus && processingStatus.status === 'idle' && processingStatus.total === 0 && processingStatus.done > 0 && (
+      {processingStatus && processingStatus.status === 'idle' && processingStatus.total === 0 && (
         <div className="p-3 bg-zinc-900 border-t border-zinc-800 text-center">
-          <p className="text-xs text-emerald-400">
-            ✅ All {processingStatus.done} photos indexed
-          </p>
+          {processingStatus.done > 0 ? (
+            <p className="text-xs text-emerald-400">
+              ✅ All {processingStatus.done} photos indexed
+            </p>
+          ) : (
+            <p className="text-xs text-zinc-500">
+              No photos to index
+            </p>
+          )}
         </div>
       )}
     </div>
