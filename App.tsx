@@ -72,12 +72,6 @@ const App: React.FC = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, currentFile: '' });
   const [currentProcessingPhoto, setCurrentProcessingPhoto] = useState<string>('');
-  const processingQueue = useRef<string[]>([]);
-  const batchBufferRef = useRef<StoredPhoto[]>([]);
-  const BATCH_SIZE = 50;
-  const processedCountRef = useRef(0);
-  const totalCountRef = useRef(0);
-  const [processingProgress, setProcessingProgress] = useState({ done: 0, total: 0, percent: 0 });
 
   // Backend processing status (polling)
   const [processingStatus, setProcessingStatus] = useState<ProcessingStatus | null>(null);
@@ -189,19 +183,6 @@ const App: React.FC = () => {
           });
 
           setPhotos(loadedPhotos);
-
-          // Re-queue photos that were never indexed (pending) so they are processed
-          // as soon as the AI connection becomes ready.
-          // NOTE: we cannot call processQueueWithPhotos() yet because the connection
-          // check hasn't finished. The queue will be drained by the useEffect below
-          // that watches `connectionStatus`.
-          const pendingIds = savedPhotos
-            .filter(p => p.status === 'pending')
-            .map(p => p.id);
-          if (pendingIds.length > 0) {
-            processingQueue.current.push(...pendingIds);
-            console.log(`⏳ ${pendingIds.length} pending photos queued — will process once AI connection is ready`);
-          }
         }
         
         // Try to restore File System Access (Chrome/Edge only)
@@ -241,90 +222,6 @@ const App: React.FC = () => {
     checkConnection();
   }, []);
 
-  // ── Screen Wake Lock: prevent sleep throttling during indexing ──────────────
-  // When the screen sleeps, browsers throttle timers and network requests,
-  // effectively freezing the indexing queue. Wake Lock keeps the CPU active.
-  useEffect(() => {
-    let wakeLock: WakeLockSentinel | null = null;
-
-    const requestWakeLock = async () => {
-      try {
-        if ('wakeLock' in navigator) {
-          wakeLock = await navigator.wakeLock.request('screen');
-          console.log('✅ Screen wake lock acquired — indexing continues even if screen sleeps');
-        }
-      } catch (err) {
-        console.warn('⚠️ Wake lock unavailable:', err);
-      }
-    };
-
-    requestWakeLock();
-
-    // Re-acquire wake lock AND force connection re-check when page becomes visible
-    const handleVisibility = async () => {
-      if (document.visibilityState === 'visible') {
-        if (!wakeLock) {
-          await requestWakeLock();
-        }
-        // After sleep, connection may be stale — force a re-check
-        if (connectionStatus === 'error') {
-          console.log('🔄 Page visible after sleep — forcing connection re-check...');
-          await checkConnection();
-        }
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibility);
-
-    return () => {
-      if (wakeLock) wakeLock.release();
-      document.removeEventListener('visibilitychange', handleVisibility);
-    };
-  }, []);
-
-  // ── Auto-resume pending photos once AI connection is confirmed ─────────────
-  // Only in 'auto' mode. Reset hasAutoResumed when photos are reloaded from DB
-  // so that a server restart can trigger indexing again.
-  const hasAutoResumed = useRef(false);
-  const photosLoadedRef = useRef(false);
-
-  // Reset resume flag when photos are freshly loaded (avoids stale flag after restart)
-  useEffect(() => {
-    if (photos.length > 0 && !photosLoadedRef.current) {
-      photosLoadedRef.current = true;
-      hasAutoResumed.current = false;
-    }
-  }, [photos.length]);
-
-  useEffect(() => {
-    if (
-      processingMode === 'auto' &&
-      connectionStatus === 'connected' &&
-      !isProcessing &&
-      processingQueue.current.length > 0 &&
-      !hasAutoResumed.current
-    ) {
-      hasAutoResumed.current = true;
-      console.log(`▶️ Auto-resuming ${processingQueue.current.length} pending photos...`);
-      setIsProcessing(true);
-      setTimeout(() => processQueueWithPhotos(), 0);
-    }
-  }, [connectionStatus, photos.length, processingMode]);
-
-  // ── Manual toggle handler ──────────────────────────────────────────────────
-  const handleToggleProcessing = useCallback(() => {
-    if (isProcessing) {
-      setIsProcessing(false);
-    } else {
-      // Fill queue with all pending photos
-      const pending = photosRef.current.filter(p => p.status === 'pending').map(p => p.id);
-      if (pending.length === 0) return;
-      processingQueue.current = pending;
-      console.log(`▶️ Manual start: ${pending.length} pending photos...`);
-      setIsProcessing(true);
-      setTimeout(() => processQueueWithPhotos(), 0);
-    }
-  }, [isProcessing]);
-
   // ── Backend processing handlers ────────────────────────────────────────────
   const handleStartProcessing = useCallback(async () => {
     try {
@@ -352,11 +249,6 @@ const App: React.FC = () => {
   // Auto-retry connection every 30s if in error state and there are pending photos
   useEffect(() => {
     if (connectionStatus !== 'error') return;
-    if (processingMode !== 'auto') return;
-
-    const savedPhotos = photosRef.current;
-    const hasPending = savedPhotos.some(p => p.status === 'pending');
-    if (!hasPending && processingQueue.current.length === 0) return;
 
     console.log('⏱️ Setting up connection retry every 30s...');
     const interval = setInterval(async () => {
@@ -369,7 +261,7 @@ const App: React.FC = () => {
     }, 30000);
 
     return () => clearInterval(interval);
-  }, [connectionStatus, processingMode]);
+  }, [connectionStatus]);
 
   // ── Poll backend processing status every 2s ────────────────────────────────
   useEffect(() => {
@@ -526,220 +418,9 @@ const App: React.FC = () => {
     }
   };
 
-  // ─── Queue Processing ─────────────────────────────────────────────────────
-  // Uses a ref to always access the latest photo state without stale closures.
+  // ─── Photo ref (for latest state access) ───────────────────────────────────
   const photosRef = useRef<Photo[]>([]);
   useEffect(() => { photosRef.current = photos; }, [photos]);
-
-  /**
-   * How many photos to analyse in parallel.
-   * - Ollama (local GPU): 4 workers for better GPU utilization (MiniCPM-V ~8GB each).
-   * - Cloud APIs (OpenRouter / Gemini): 3 workers (rate-limit permitting).
-   */
-  const concurrencyRef = useRef(4);
-  useEffect(() => {
-    concurrencyRef.current = settings.provider === 'ollama' ? 4 : 3;
-  }, [settings.provider]);
-
-  /** Number of active parallel workers */
-  const activeWorkers = useRef(0);
-
-  /**
-   * Process one photo and then pull the next one from the queue.
-   * Multiple instances of this function run concurrently (up to CONCURRENCY).
-   *
-   * Handles two cases:
-   * A) Fresh photo with a real File blob  → encode via canvas/FileReader
-   * B) Photo reloaded from DB (File.size=0) → fetch image bytes from the
-   *    backend /preview endpoint and send to LLM as base64
-   */
-  const processOnePhoto = async (photoId: string) => {
-    const photo = photosRef.current.find(p => p.id === photoId);
-    if (!photo) {
-      console.log(`⚠️ Photo ${photoId} not found, skipping...`);
-      return;
-    }
-
-    // Skip RAW / unsupported formats — browsers cannot decode these for thumbnail generation
-    const RAW_EXTS = new Set(['.cr2','.cr3','.dng','.nef','.nrw','.arw','.srf','.orf',
-      '.rw2','.raf','.raw','.rwl','.pef','.srw','.x3f','.3fr','.iiq','.erf','.kdc',
-      '.dcr','.tif','.tiff','.psd','.psb']);
-    const ext = photo.name.slice(photo.name.lastIndexOf('.')).toLowerCase();
-    if (RAW_EXTS.has(ext)) {
-      console.log(`⏭️ [worker] Skipping unsupported format: ${photo.name} (${ext})`);
-      setPhotos(prev => prev.map(p => p.id === photoId ? { ...p, status: 'done' as const } : p));
-      return;
-    }
-
-    console.log(`🔍 [worker] Processing: ${photo.name}`);
-    setPhotos(prev => prev.map(p => p.id === photoId ? { ...p, status: 'processing' } : p));
-    setCurrentProcessingPhoto(photo.name);
-
-    // Update progress counter
-    processedCountRef.current += 1;
-    const pct = totalCountRef.current > 0
-      ? ((processedCountRef.current / totalCountRef.current) * 100).toFixed(1)
-      : '0.0';
-    setProcessingProgress({ done: processedCountRef.current, total: totalCountRef.current, percent: parseFloat(pct) });
-    if (processedCountRef.current % 10 === 0 || processedCountRef.current === totalCountRef.current) {
-      console.log(`📊 Progress: ${processedCountRef.current}/${totalCountRef.current} (${pct}%)`);
-    }
-
-    try {
-      let mimeType: string;
-      const hasRealFile = photo.file && photo.file.size > 0;
-
-      // Step 1: Generate a thumbnail (~480px) FIRST — this is what we send to the LLM
-      // instead of the full original file (which can be 30MB+).
-      const thumbnailBase64 = await new Promise<string>((resolve) => {
-        const img = new Image();
-        const src = hasRealFile
-          ? URL.createObjectURL(photo.file!)
-          : `/api/photos/${encodeURIComponent(photo.id)}/preview`;
-        img.onload = () => {
-          const MAX = 480;
-          const ratio = Math.min(MAX / img.width, MAX / img.height, 1);
-          const w = Math.round(img.width * ratio);
-          const h = Math.round(img.height * ratio);
-          const canvas = document.createElement('canvas');
-          canvas.width = w; canvas.height = h;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.imageSmoothingEnabled = true;
-            ctx.imageSmoothingQuality = 'high';
-            ctx.drawImage(img, 0, 0, w, h);
-            resolve(canvas.toDataURL('image/jpeg', 0.88));
-            mimeType = 'image/jpeg';
-          } else {
-            resolve('');
-          }
-          if (hasRealFile) URL.revokeObjectURL(src);
-        };
-        img.onerror = () => { if (hasRealFile) URL.revokeObjectURL(src); resolve(''); };
-        img.src = src;
-      });
-
-      if (!thumbnailBase64) {
-        throw new Error(`Failed to generate thumbnail for ${photo.name}`);
-      }
-
-      // Step 2: Send only the thumbnail (~30-80KB) to the LLM, not the full file.
-      const base64Data = thumbnailBase64.split(',')[1];
-      const tags = await analyzeImage(base64Data, mimeType);
-      console.log(`✅ Tags for ${photo.name}:`, tags);
-
-      const updatedPhoto = {
-        ...photo,
-        tags: [...new Set([...photo.tags, ...tags])],
-        status: 'done' as const,
-        indexedAt: Date.now(),
-        // Store thumbnail as previewUrl so LazyImage uses it immediately
-        previewUrl: thumbnailBase64 || photo.previewUrl,
-        thumbnail: thumbnailBase64,
-      };
-
-      setPhotos(prev => prev.map(p => p.id === photoId ? updatedPhoto : p));
-
-      // Resolve absolute path for backend (EXIF write + preview)
-      const absoluteFolderPath = updatedPhoto.absoluteFolderPath || updatedPhoto.folderPath || '';
-      let absoluteFilePath = updatedPhoto.path || '';
-      if (absoluteFolderPath && absoluteFilePath) {
-        // Extract just the filename from the path (handle both / and \ separators)
-        const fileName = absoluteFilePath.split(/[\\/]/).pop() || updatedPhoto.name;
-        // Use path.join for proper cross-platform path construction
-        absoluteFilePath = absoluteFolderPath.includes('\\')
-          ? `${absoluteFolderPath}\\${fileName}`
-          : `${absoluteFolderPath}/${fileName}`;
-      } else if (absoluteFolderPath) {
-        absoluteFilePath = absoluteFolderPath;
-      }
-
-      const storedPhoto: StoredPhoto = {
-        id: updatedPhoto.id,
-        name: updatedPhoto.name,
-        path: absoluteFilePath,
-        folderPath: absoluteFolderPath,
-        size: hasRealFile ? updatedPhoto.file!.size : 0,
-        lastModified: hasRealFile ? updatedPhoto.file!.lastModified : 0,
-        mimeType,
-        tags: updatedPhoto.tags,
-        thumbnail: thumbnailBase64,
-        status: 'done',
-        indexedAt: Date.now(),
-      };
-
-      // Batch DB writes — flush every BATCH_SIZE photos to reduce disk I/O
-      batchBufferRef.current.push(storedPhoto);
-      if (batchBufferRef.current.length >= BATCH_SIZE) {
-        await flushPhotoBatch();
-      }
-      console.log(`💾 Buffered: ${photo.name} → ${absoluteFilePath} (batch: ${batchBufferRef.current.length}/${BATCH_SIZE})`);
-
-    } catch (error) {
-      console.error(`❌ Failed: ${photo.name}`, error);
-      setPhotos(prev => prev.map(p => p.id === photoId
-        ? { ...p, status: 'error', errorMessage: error instanceof Error ? error.message : 'Unknown error' }
-        : p));
-    }
-  };
-
-  /** Flush any remaining photos in the batch buffer to the database. */
-  const flushPhotoBatch = async () => {
-    if (batchBufferRef.current.length === 0) return;
-    const batch = batchBufferRef.current;
-    batchBufferRef.current = [];
-    await savePhotos(batch);
-    console.log(`💾 Flushed batch of ${batch.length} photos to DB`);
-  };
-
-  /**
-   * Drain the queue, spawning up to CONCURRENCY parallel workers.
-   * Safe to call multiple times — extra calls become no-ops when workers
-   * are already at the concurrency cap.
-   */
-  const processQueueWithPhotos = async (initialPhotos?: Photo[]) => {
-    if (initialPhotos) photosRef.current = initialPhotos;
-
-    // Initialize progress counters
-    totalCountRef.current = processingQueue.current.length;
-    processedCountRef.current = 0;
-    setProcessingProgress({ done: 0, total: totalCountRef.current, percent: 0 });
-    console.log(`🚀 Starting processing of ${totalCountRef.current} photos with ${concurrencyRef.current} workers...`);
-
-    // Drain loop: each worker keeps pulling until the queue is empty
-    const runWorker = async () => {
-      activeWorkers.current += 1;
-      try {
-        while (processingQueue.current.length > 0) {
-          const photoId = processingQueue.current.shift();
-          if (!photoId) break;
-          await processOnePhoto(photoId);
-        }
-      } finally {
-        activeWorkers.current -= 1;
-        if (activeWorkers.current === 0) {
-          // Flush any remaining buffered photos before marking complete
-          await flushPhotoBatch();
-          setIsProcessing(false);
-          setCurrentProcessingPhoto('');
-          console.log('✅ All processing complete!');
-          refreshFolders();
-        }
-      }
-    };
-
-    // How many new workers can we spawn?
-    const toSpawn = Math.min(
-      concurrencyRef.current - activeWorkers.current,
-      processingQueue.current.length,
-    );
-    if (toSpawn <= 0) return;
-
-    setIsProcessing(true);
-    for (let i = 0; i < toSpawn; i++) {
-      runWorker(); // intentionally not awaited — fire and forget
-    }
-  };
 
   /**
    * Step 1 — called when the user picks a folder via the native file picker.
@@ -789,8 +470,7 @@ const App: React.FC = () => {
    *   1. POST /folders → backend scans + creates UUID photo rows
    *   2. GET /photos   → frontend loads DB records (stable UUIDs)
    *   3. Photo[] built from DB; real File attached if name matches
-   *   4. Queue pending IDs; done photos shown immediately
-   *   5. processOnePhoto encodes via real File (fast) or /preview (fallback)
+   *   4. Done photos shown immediately; backend handles AI processing
    *
    * MODE B — pathAccessible=false (backend on different OS/drive, e.g. Node on
    *           Windows but path is already in DB from a previous session, or path
@@ -985,15 +665,6 @@ const App: React.FC = () => {
     setPhotos(prev => {
       const others = prev.filter(p => p.folderPath !== cleanAbsolutePath);
       const merged = [...others, ...photosToProcess];
-
-      if (pendingIds.length > 0) {
-        processingQueue.current.push(...pendingIds);
-        if (!isProcessing) {
-          setIsProcessing(true);
-          setTimeout(() => processQueueWithPhotos(merged), 0);
-        }
-      }
-
       return merged;
     });
 
@@ -1312,16 +983,8 @@ const App: React.FC = () => {
       }
     
       setPhotos(updatedPhotos);
-      
-      // Add to processing queue
-      processingQueue.current.push(...photosToRetry);
-      
-      console.log(`✅ Linked ${linkedCount}/${uncategorizedPhotos.length} photos, starting rescan...`);
-      
-      if (!isProcessing) {
-        setIsProcessing(true);
-        setTimeout(() => processQueueWithPhotos(), 0);
-      }
+
+      console.log(`✅ Linked ${linkedCount}/${uncategorizedPhotos.length} photos`);
     } catch (error) {
       console.error('Error during retry:', error);
       alert('An error occurred while linking files. Please try again.');

@@ -5,7 +5,7 @@
  * Processes pending photos with AI (Ollama) and saves tags to DB.
  */
 
-import { getDb, saveDb, saveProcessingState, loadProcessingState, resetProcessingState, ProcessingState } from './db.js';
+import { getDb, saveDb, saveProcessingState, loadProcessingState, ProcessingState } from './db.js';
 import { writeTagsToFile } from './exif.js';
 import { resizeToThumbnail, isRawFormat, getMimeType } from './image.js';
 import { findClosestTag, validateTags } from './tags.js';
@@ -22,10 +22,23 @@ const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'minicpm-v';
 
 // ─── State ─────────────────────────────────────────────────────────────────────
 
-let state: ProcessingState = { ...loadProcessingState() };
+let _state: ProcessingState | null = null;
 let activeWorkers = 0;
 let isRunning = false;
 let stopRequested = false;
+
+function getState(): ProcessingState {
+  if (!_state) {
+    _state = { ...loadProcessingState() };
+  }
+  return _state;
+}
+
+function setState(partial: Partial<ProcessingState>): void {
+  const current = getState();
+  Object.assign(current, partial);
+  saveProcessingState(current);
+}
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -62,7 +75,8 @@ export interface ProcessingStatus {
  */
 export async function startProcessing(): Promise<{ success: true; total: number }> {
   if (isRunning) {
-    return { success: true, total: state.total };
+    const s = getState();
+    return { success: true, total: s.total };
   }
 
   console.log('[PROCESSOR] Starting photo processing...');
@@ -79,14 +93,14 @@ export async function startProcessing(): Promise<{ success: true; total: number 
 
   isRunning = true;
   stopRequested = false;
-  state = {
+  _state = {
     status: 'running',
     done: 0,
     total: pendingCount,
     currentPhoto: '',
     startTime: Date.now(),
   };
-  saveProcessingState(state);
+  saveProcessingState(_state);
 
   console.log(`[PROCESSOR] Processing ${pendingCount} pending photos with ${MAX_WORKERS} workers...`);
 
@@ -99,14 +113,13 @@ export async function startProcessing(): Promise<{ success: true; total: number 
   // Wait for all workers to complete
   Promise.all(workers).then(() => {
     isRunning = false;
-    state.status = 'idle';
-    saveProcessingState(state);
-    console.log(`[PROCESSOR] ✅ All processing complete! Indexed ${state.done} photos.`);
+    setState({ status: 'idle' });
+    const s = getState();
+    console.log(`[PROCESSOR] ✅ All processing complete! Indexed ${s.done} photos.`);
   }).catch(err => {
     console.error('[PROCESSOR] Worker error:', err);
     isRunning = false;
-    state.status = 'idle';
-    saveProcessingState(state);
+    setState({ status: 'idle' });
   });
 
   return { success: true, total: pendingCount };
@@ -122,25 +135,22 @@ export async function stopProcessing(): Promise<void> {
 
   console.log('[PROCESSOR] Stopping processing (draining active workers)...');
   stopRequested = true;
-  state.status = 'stopping';
-  saveProcessingState(state);
+  setState({ status: 'stopping' });
 
   // Wait for active workers to finish (max 30s)
   const timeout = setTimeout(() => {
     console.warn('[PROCESSOR] Force stop after 30s timeout');
     isRunning = false;
-    state.status = 'idle';
-    saveProcessingState(state);
+    setState({ status: 'idle' });
   }, 30000);
 
-  while (activeWorkers > 0 && !stopRequested) {
+  while (activeWorkers > 0 && stopRequested) {
     await new Promise(r => setTimeout(r, 200));
   }
 
   clearTimeout(timeout);
   isRunning = false;
-  state.status = 'idle';
-  saveProcessingState(state);
+  setState({ status: 'idle' });
   console.log('[PROCESSOR] Stopped.');
 }
 
@@ -148,14 +158,15 @@ export async function stopProcessing(): Promise<void> {
  * Get current processing status.
  */
 export function getProgress(): ProcessingStatus {
-  const percent = state.total > 0 ? Math.round((state.done / state.total) * 100) : 0;
+  const s = getState();
+  const percent = s.total > 0 ? Math.round((s.done / s.total) * 100) : 0;
   return {
-    status: state.status,
-    done: state.done,
-    total: state.total,
+    status: s.status,
+    done: s.done,
+    total: s.total,
     percent,
-    currentPhoto: state.currentPhoto,
-    startTime: state.startTime,
+    currentPhoto: s.currentPhoto,
+    startTime: s.startTime,
   };
 }
 
@@ -216,7 +227,8 @@ function pickNextPhoto(): PhotoRow | null {
 // ─── Internal: Process One Photo ───────────────────────────────────────────────
 
 async function processPhoto(photo: PhotoRow): Promise<void> {
-  state.currentPhoto = photo.name;
+  const s = getState();
+  setState({ currentPhoto: photo.name });
 
   // Skip RAW/unsupported formats
   if (isRawFormat(photo.name)) {
@@ -251,12 +263,16 @@ async function processPhoto(photo: PhotoRow): Promise<void> {
   markPhotoDone(photo.id, tags, thumbnailDataUrl);
 
   // Update progress
-  state.done++;
-  if (state.done % 10 === 0 || state.done === state.total) {
-    const pct = state.total > 0 ? ((state.done / state.total) * 100).toFixed(1) : '0.0';
-    console.log(`📊 Progress: ${state.done}/${state.total} (${pct}%)`);
-    saveProcessingState(state);
+  const st = getState();
+  const newDone = st.done + 1;
+  const newTotal = st.total;
+  if (newDone % 10 === 0 || newDone === newTotal) {
+    const pct = newTotal > 0 ? ((newDone / newTotal) * 100).toFixed(1) : '0.0';
+    console.log(`📊 Progress: ${newDone}/${newTotal} (${pct}%)`);
   }
+  // Update the done counter directly in the state object
+  _state!.done = newDone;
+  saveProcessingState(_state!);
 }
 
 // ─── Internal: Ollama Analysis ────────────────────────────────────────────────
@@ -372,7 +388,10 @@ function markPhotoError(photoId: string, errorMessage: string): void {
     SET status = 'error', error_message = @errorMessage, updated_at = unixepoch('now')
     WHERE id = @id
   `).run({ errorMessage, id: photoId });
-  state.done++; // Count errors as "processed" to avoid reprocessing
+
+  // Count errors as "processed" to avoid reprocessing
+  const s = getState();
+  _state!.done = s.done + 1;
   saveDb();
-  saveProcessingState(state);
+  saveProcessingState(_state!);
 }
