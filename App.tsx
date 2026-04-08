@@ -253,10 +253,17 @@ const App: React.FC = () => {
 
     requestWakeLock();
 
-    // Re-acquire when page becomes visible again (e.g. after waking from sleep)
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible' && !wakeLock) {
-        requestWakeLock();
+    // Re-acquire wake lock AND force connection re-check when page becomes visible
+    const handleVisibility = async () => {
+      if (document.visibilityState === 'visible') {
+        if (!wakeLock) {
+          await requestWakeLock();
+        }
+        // After sleep, connection may be stale — force a re-check
+        if (connectionStatus === 'error' || connectionStatus === 'disconnected') {
+          console.log('🔄 Page visible after sleep — forcing connection re-check...');
+          await checkConnection();
+        }
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);
