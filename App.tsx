@@ -65,13 +65,7 @@ const App: React.FC = () => {
   const [connectionError, setConnectionError] = useState<string>('');
   const [installedModels, setInstalledModels] = useState<string[]>([]);
 
-  // Processing State
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [processingMode, setProcessingMode] = useState<'auto' | 'manual'>('auto');
   const pendingCount = photos.filter(p => p.status === 'pending').length;
-  const [isScanning, setIsScanning] = useState(false);
-  const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, currentFile: '' });
-  const [currentProcessingPhoto, setCurrentProcessingPhoto] = useState<string>('');
 
   // Backend processing status (polling)
   const [processingStatus, setProcessingStatus] = useState<ProcessingStatus | null>(null);
@@ -290,8 +284,18 @@ const App: React.FC = () => {
           setPhotos(loadedPhotos);
           refreshFolders();
         }
-      } catch {
-        // Silently ignore polling errors
+      } catch (err) {
+        // If the endpoint doesn't exist yet or server isn't ready, set a default idle state
+        if (!processingStatus) {
+          setProcessingStatus({
+            status: 'idle',
+            done: 0,
+            total: 0,
+            percent: 0,
+            currentPhoto: '',
+            startTime: null,
+          });
+        }
       }
     };
 
@@ -1458,35 +1462,6 @@ const App: React.FC = () => {
                   </p>
                 </div>
 
-                {/* Indexing Mode */}
-                <div>
-                  <label className="block text-xs font-medium text-zinc-400 mb-2">Indexing Mode</label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      onClick={() => setProcessingMode('auto')}
-                      className={`p-3 rounded-lg border text-sm font-medium transition-all ${
-                        processingMode === 'auto'
-                          ? 'bg-emerald-600/20 border-emerald-500 text-emerald-300'
-                          : 'bg-zinc-800/50 border-zinc-700 text-zinc-400 hover:border-zinc-600'
-                      }`}
-                    >
-                      ▶ Auto
-                      <div className="text-[10px] text-zinc-500 mt-1">Starts when AI is connected</div>
-                    </button>
-                    <button
-                      onClick={() => setProcessingMode('manual')}
-                      className={`p-3 rounded-lg border text-sm font-medium transition-all ${
-                        processingMode === 'manual'
-                          ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300'
-                          : 'bg-zinc-800/50 border-zinc-700 text-zinc-400 hover:border-zinc-600'
-                      }`}
-                    >
-                      ✋ Manual
-                      <div className="text-[10px] text-zinc-500 mt-1">Click to start in sidebar</div>
-                    </button>
-                  </div>
-                </div>
-
                 {/* Connection Status */}
                 {connectionStatus === 'error' && (
                   <div className="p-3 bg-red-900/30 border border-red-800/50 rounded-lg">
@@ -1753,52 +1728,6 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Scanning/Processing Overlay */}
-        {(isScanning || isProcessing) && (
-          <div className="fixed bottom-4 right-4 z-50 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl p-4 w-80">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="relative">
-                <svg className="animate-spin text-orange-500" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-                </svg>
-              </div>
-              <div className="flex-1">
-                <p className="text-sm font-medium text-white">
-                  {isScanning ? 'Scanning folder...' : 'Analyzing photos...'}
-                </p>
-                <p className="text-xs text-zinc-400">
-                  {isScanning 
-                    ? `${scanProgress.current} / ${scanProgress.total} files scanned`
-                    : `${processedCount} / ${photos.length} photos indexed`
-                  }
-                </p>
-              </div>
-            </div>
-            
-            {/* Progress bar */}
-            <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden mb-2">
-              <div 
-                className="h-full bg-gradient-to-r from-orange-500 to-orange-400 transition-all duration-300 ease-out"
-                style={{ 
-                  width: `${isScanning 
-                    ? (scanProgress.total > 0 ? (scanProgress.current / scanProgress.total) * 100 : 0)
-                    : (photos.length > 0 ? (processedCount / photos.length) * 100 : 0)
-                  }%` 
-                }}
-              />
-            </div>
-            
-            {/* Current file being processed */}
-            <p className="text-[10px] text-zinc-500 truncate">
-              {isScanning 
-                ? `📄 ${scanProgress.currentFile}`
-                : currentProcessingPhoto 
-                  ? `🔍 Analyzing: ${currentProcessingPhoto}`
-                  : 'Waiting...'
-              }
-            </p>
-          </div>
-        )}
 
         {/* Content */}
         {photos.length === 0 ? (
