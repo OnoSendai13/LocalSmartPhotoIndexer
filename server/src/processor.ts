@@ -27,6 +27,11 @@ let activeWorkers = 0;
 let isRunning = false;
 let stopRequested = false;
 
+/** Check if the processor is currently running (for watcher to skip scans). */
+export function isProcessorRunning(): boolean {
+  return isRunning;
+}
+
 function getState(): ProcessingState {
   if (!_state) {
     _state = { ...loadProcessingState() };

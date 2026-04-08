@@ -42,6 +42,12 @@ function addPhotoSync(folderId: string, folderPath: string, fullPath: string): b
 export async function scanFolder(folderId: string, folderPath: string): Promise<{ newPhotos: number }> {
   if (isNuking()) return { newPhotos: 0 };
 
+  // Skip periodic scans while the AI processor is running to avoid I/O contention
+  const { isProcessorRunning } = await import('./processor.js');
+  if (isProcessorRunning()) {
+    return { newPhotos: 0 };
+  }
+
   const db = getDb();
   if (!existsSync(folderPath)) return { newPhotos: 0 };
 
