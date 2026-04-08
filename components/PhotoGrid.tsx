@@ -25,11 +25,15 @@ const LazyImage: React.FC<{ photo: Photo; className?: string }> = ({ photo, clas
   const [isLoaded, setIsLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
   const [usedBlobUrl, setUsedBlobUrl] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
   const imgRef = useRef<HTMLDivElement>(null);
+  const maxRetries = 5;
+  const retryDelays = [500, 1000, 2000, 4000, 8000]; // exponential backoff
 
   useEffect(() => {
     setIsLoaded(false);
     setFailed(false);
+    setRetryCount(0);
 
     // Priority 1: real File blob (live session — full original resolution)
     if (photo.file && photo.file.size > 0) {
@@ -49,6 +53,24 @@ const LazyImage: React.FC<{ photo: Photo; className?: string }> = ({ photo, clas
     setImageUrl(`${API_BASE}/photos/${encodeURIComponent(photo.id)}/preview`);
   }, [photo.file, photo.previewUrl, photo.id]);
 
+  // Retry failed backend preview requests with exponential backoff
+  useEffect(() => {
+    if (!failed || retryCount >= maxRetries) return;
+    if (!imageUrl.includes(`/photos/${photo.id}/preview`)) return;
+
+    const delay = retryDelays[Math.min(retryCount, retryDelays.length - 1)];
+    const timer = setTimeout(() => {
+      console.log(`🔄 Retry ${retryCount + 1}/${maxRetries} for preview: ${photo.name}`);
+      setRetryCount(c => c + 1);
+      setFailed(false);
+      // Force re-fetch by appending a cache-busting query param
+      const baseUrl = `${API_BASE}/photos/${encodeURIComponent(photo.id)}/preview`;
+      setImageUrl(`${baseUrl}?retry=${Date.now()}`);
+    }, delay);
+
+    return () => clearTimeout(timer);
+  }, [failed, retryCount, photo.id, photo.name, imageUrl]);
+
   // Cleanup blob URL on unmount
   useEffect(() => {
     return () => { if (usedBlobUrl && imageUrl) URL.revokeObjectURL(imageUrl); };
@@ -56,8 +78,8 @@ const LazyImage: React.FC<{ photo: Photo; className?: string }> = ({ photo, clas
 
   return (
     <div ref={imgRef} className="w-full h-full">
-      {/* Show placeholder if no URL yet or if load failed */}
-      {(!imageUrl || failed) ? (
+      {/* Show placeholder if no URL yet or if load failed (after all retries) */}
+      {(!imageUrl || (failed && retryCount >= maxRetries)) ? (
         <Placeholder name={photo.name} />
       ) : (
         <img
@@ -65,7 +87,7 @@ const LazyImage: React.FC<{ photo: Photo; className?: string }> = ({ photo, clas
           alt={photo.name}
           className={`${className} ${!isLoaded ? 'opacity-0' : 'opacity-100'} transition-opacity duration-300`}
           onLoad={() => setIsLoaded(true)}
-          onError={() => setFailed(true)}  /* show placeholder on 404, not black square */
+          onError={() => setFailed(true)}
           loading="lazy"
         />
       )}
