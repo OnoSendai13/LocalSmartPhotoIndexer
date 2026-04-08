@@ -477,3 +477,129 @@ photosRouter.post('/photos/rewrite-exif', async (c) => {
   console.log(`[rewrite-exif] ${written} files updated, ${missing} missing`);
   return c.json({ success: true, written, missing, total: rows.length });
 });
+
+// POST /api/photos/analyze — proxy to Ollama (avoids CORS / Docker networking issues)
+// Accepts base64 image data and returns AI-generated tags.
+// The backend calls Ollama running in Docker and relays the response.
+photosRouter.post('/photos/analyze', async (c) => {
+  try {
+    const body = await c.req.json<{
+      base64Data: string;
+      mimeType: string;
+      ollamaUrl?: string;
+      model?: string;
+    }>();
+
+    if (!body.base64Data) {
+      return c.json({ error: 'base64Data is required' }, 400);
+    }
+
+    const ollamaUrl = body.ollamaUrl || 'http://localhost:11434';
+    const model = body.model || 'minicpm-v';
+
+    // Simple and direct prompt
+    const prompt = `/no_think
+What do you see in this image? Answer with a JSON array of tags.
+
+Choose from these categories:
+- People: Portrait, Group, Family, Couple, Selfie
+- Scene: Landscape, Cityscape, Beach, Mountain, Forest, Garden, Street
+- Location: Indoor, Outdoor, Home, Restaurant, Museum, Church
+- Weather: Sunny, Cloudy, Sunset, Sunrise, Night
+- Activity: Walking, Posing, Eating, Traveling, Sports
+- Objects: Car, Food, Flower, Architecture, Art, Statue
+
+Return ONLY a JSON array like: ["Family", "Outdoor", "Sunny", "Garden"]
+No explanation, just the JSON array.`;
+
+    const requestBody = {
+      model: model,
+      prompt: prompt,
+      images: [body.base64Data],
+      stream: false,
+      options: {
+        temperature: 0.3,
+        num_predict: 500,
+      }
+    };
+
+    if (!model.includes('qwen3-vl')) {
+      (requestBody as Record<string, unknown>).format = "json";
+    }
+
+    const endpoint = `${ollamaUrl.replace(/\/$/, '')}/api/generate`;
+    console.log(`🦙 [Proxy] Calling Ollama at ${endpoint} with model ${model}`);
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`❌ [Proxy] Ollama API Error:`, errorText);
+      return c.json({ error: `Ollama error: ${response.statusText}`, details: errorText }, response.status as 502);
+    }
+
+    const data = await response.json();
+    console.log(`📦 [Proxy] Ollama response received`);
+
+    return c.json({
+      success: true,
+      response: data.response || '',
+      thinking: data.thinking || null,
+    });
+  } catch (error) {
+    console.error('❌ [Proxy] Failed to call Ollama:', error);
+    return c.json({
+      error: 'Failed to connect to Ollama',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, 502);
+  }
+});
+
+// GET /api/ollama/models — proxy to get installed Ollama models
+photosRouter.get('/ollama/models', async (c) => {
+  try {
+    const ollamaUrl = c.req.query('url') || 'http://localhost:11434';
+    const endpoint = `${ollamaUrl.replace(/\/$/, '')}/api/tags`;
+
+    const response = await fetch(endpoint);
+    if (!response.ok) {
+      return c.json({ error: 'Failed to fetch models from Ollama' }, response.status as 502);
+    }
+
+    const data = await response.json();
+    return c.json({
+      success: true,
+      models: (data.models || []).map((m: any) => m.name),
+    });
+  } catch (error) {
+    console.error('❌ [Proxy] Failed to fetch Ollama models:', error);
+    return c.json({
+      error: 'Failed to connect to Ollama',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, 502);
+  }
+});
+
+// POST /api/ollama/health — check if Ollama is reachable via backend
+photosRouter.post('/ollama/health', async (c) => {
+  try {
+    const ollamaUrl = (await c.req.json()).ollamaUrl || 'http://localhost:11434';
+    const endpoint = `${ollamaUrl.replace(/\/$/, '')}/api/tags`;
+
+    const response = await fetch(endpoint, { method: 'GET' });
+    if (!response.ok) {
+      return c.json({ connected: false, error: `HTTP ${response.status}` });
+    }
+
+    return c.json({ connected: true });
+  } catch (error) {
+    return c.json({
+      connected: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
