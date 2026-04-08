@@ -65,6 +65,10 @@ const App: React.FC = () => {
   const [connectionError, setConnectionError] = useState<string>('');
   const [installedModels, setInstalledModels] = useState<string[]>([]);
 
+  // Scanning state (folder import progress)
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, currentFile: '' });
+
   const pendingCount = photos.filter(p => p.status === 'pending').length;
 
   // Backend processing status (polling)
@@ -1336,7 +1340,7 @@ const App: React.FC = () => {
         onSelectCategory={setSelectedCategory}
         totalPhotos={photos.length}
         processedCount={processedCount}
-        isProcessing={isProcessing}
+        isProcessing={isScanning || (processingStatus?.status === 'running')}
         onAddPhotos={() => fileInputRef.current?.click()}
         onLinkFolder={handleLinkFolder}
         hasUnlinkedPhotos={hasUnlinkedPhotos}
@@ -1641,7 +1645,7 @@ const App: React.FC = () => {
                   {photos.filter(p => p.tags.length === 1 && p.tags[0] === 'Uncategorized').length > 0 && (
                     <button
                       onClick={() => { setShowDataModal(false); handleRetryUncategorized(); }}
-                      disabled={isProcessing}
+                      disabled={isScanning || (processingStatus?.status === 'running')}
                       className="w-full px-4 py-3 bg-orange-600 hover:bg-orange-500 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
