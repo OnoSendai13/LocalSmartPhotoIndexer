@@ -35,6 +35,12 @@ export function isProcessorRunning(): boolean {
 function getState(): ProcessingState {
   if (!_state) {
     _state = { ...loadProcessingState() };
+    // If the state was left in 'running' or 'stopping' from a crashed session,
+    // reset to idle. The in-memory isRunning flag is always false on startup.
+    if (_state.status === 'running' || _state.status === 'stopping') {
+      _state.status = 'idle';
+      saveProcessingState(_state);
+    }
   }
   return _state;
 }
