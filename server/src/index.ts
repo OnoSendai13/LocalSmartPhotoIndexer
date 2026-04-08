@@ -9,28 +9,50 @@ import { foldersRouter } from './routes/folders.js';
 import { settingsRouter } from './routes/settings.js';
 import { startAllWatchers, startPeriodicScans, stopAllWatchers } from './watcher.js';
 
-/** Check if a port is in use, and optionally free it (Windows only via taskkill). */
+/** Check if a port is in use, and optionally free it.
+ *  Works on both Windows (PowerShell/taskkill) and Linux/macOS (lsof/kill). */
 async function ensurePortFree(port: number, force = false): Promise<void> {
   return new Promise((resolve) => {
     const server = net.createServer();
     server.once('error', (_err: NodeJS.ErrnoException) => {
       if (_err.code === 'EADDRINUSE') {
         if (force) {
-          // Use lsof to find PID (works from WSL seeing Windows processes)
-          // and kill it with the Unix kill command (WSL forwards to Windows)
           try {
-            const out = execSync(
-              `lsof -ti :${port} 2>/dev/null | head -1`,
-              { encoding: 'utf8', shell: '/bin/sh' }
-            ).trim();
-            const pid = parseInt(out, 10);
-            if (pid && !isNaN(pid)) {
-              console.warn(`[PORT] Port ${port} in use by WSL PID ${pid} — killing...`);
-              execSync(`kill -9 ${pid}`, { shell: '/bin/sh' });
+            let pid: number | undefined;
+
+            if (process.platform === 'win32') {
+              // Windows: use netstat to find PID, then taskkill
+              const out = execSync(
+                `netstat -ano | findstr :${port} | findstr LISTENING`,
+                { encoding: 'utf8', shell: 'powershell.exe' }
+              ).trim();
+              // Format: "  TCP  0.0.0.0:6800  0.0.0.0:0  LISTENING  12345"
+              const match = out.match(/LISTENING\s+(\d+)/);
+              pid = match ? parseInt(match[1], 10) : undefined;
+
+              if (pid) {
+                console.warn(`[PORT] Port ${port} in use by Windows PID ${pid} — killing...`);
+                execSync(`taskkill /PID ${pid} /F`, { shell: 'powershell.exe' });
+              }
+            } else {
+              // Linux/macOS/WSL: use lsof and kill
+              const out = execSync(
+                `lsof -ti :${port} 2>/dev/null | head -1`,
+                { encoding: 'utf8', shell: '/bin/sh' }
+              ).trim();
+              pid = parseInt(out, 10);
+
+              if (pid && !isNaN(pid)) {
+                console.warn(`[PORT] Port ${port} in use by PID ${pid} — killing...`);
+                execSync(`kill -9 ${pid}`, { shell: '/bin/sh' });
+              }
+            }
+
+            if (pid) {
               console.warn(`[PORT] Process killed. Retrying in 1s...`);
               setTimeout(resolve, 1000);
             } else {
-              console.warn(`[PORT] Could not find PID for port ${port} via lsof — assuming free`);
+              console.warn(`[PORT] Could not find PID for port ${port} — assuming free`);
               resolve();
             }
           } catch (killErr) {
