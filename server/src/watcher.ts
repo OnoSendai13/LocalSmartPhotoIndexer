@@ -22,21 +22,26 @@ function getMimeType(filename: string): string {
 function addPhotoSync(folderId: string, folderPath: string, fullPath: string): boolean {
   if (isNuking()) return false;
 
-  const db = getDb();
-  const name = fullPath.split(/[/\\]/).pop() || fullPath;
+  try {
+    const db = getDb();
+    const name = fullPath.split(/[/\\]/).pop() || fullPath;
 
-  const existing = db.prepare('SELECT id FROM photos WHERE folder_path = @fp AND name = @n').get({ fp: folderPath, n: name });
-  if (existing) return false;
+    const existing = db.prepare('SELECT id FROM photos WHERE folder_path = @fp AND name = @n').get({ fp: folderPath, n: name });
+    if (existing) return false;
 
-  let stats;
-  try { stats = statSync(fullPath); } catch { return false; }
+    let stats;
+    try { stats = statSync(fullPath); } catch { return false; }
 
-  db.prepare(`
-    INSERT INTO photos (id, name, path, folder_path, size, last_modified, mime_type, tags, status)
-    VALUES (@id, @n, @rp, @fp, @sz, @lm, @mt, '[]', 'pending')
-  `).run({ id: randomUUID(), n: name, rp: fullPath, fp: folderPath, sz: stats.size, lm: Math.floor(stats.mtimeMs), mt: getMimeType(name) });
+    db.prepare(`
+      INSERT INTO photos (id, name, path, folder_path, size, last_modified, mime_type, tags, status)
+      VALUES (@id, @n, @rp, @fp, @sz, @lm, @mt, '[]', 'pending')
+    `).run({ id: randomUUID(), n: name, rp: fullPath, fp: folderPath, sz: stats.size, lm: Math.floor(stats.mtimeMs), mt: getMimeType(name) });
 
-  return true;
+    return true;
+  } catch (err) {
+    console.error(`[WATCHER] Failed to add photo ${fullPath}:`, err);
+    return false;
+  }
 }
 
 export async function scanFolder(folderId: string, folderPath: string): Promise<{ newPhotos: number }> {
@@ -48,7 +53,8 @@ export async function scanFolder(folderId: string, folderPath: string): Promise<
     return { newPhotos: 0 };
   }
 
-  const db = getDb();
+  let db;
+  try { db = getDb(); } catch { return { newPhotos: 0 }; }
   if (!existsSync(folderPath)) return { newPhotos: 0 };
 
   console.log(`🔍 Scanning: ${folderPath}`);
@@ -68,8 +74,12 @@ export async function scanFolder(folderId: string, folderPath: string): Promise<
     }
   }
 
-  scanDir(folderPath);
-  db.prepare('UPDATE folders SET last_scanned_at = unixepoch(\'now\') WHERE id = @id').run({ id: folderId });
+  try {
+    scanDir(folderPath);
+    db.prepare('UPDATE folders SET last_scanned_at = unixepoch(\'now\') WHERE id = @id').run({ id: folderId });
+  } catch (err) {
+    console.error(`[WATCHER] Error during scan of ${folderPath}:`, err);
+  }
   console.log(`✅ Scan done: ${newPhotos} new in ${folderPath}`);
   return { newPhotos };
 }
@@ -84,8 +94,12 @@ export function startWatching(folderId: string, folderPath: string) {
   watcher.on('add', (p: string) => addPhotoSync(folderId, folderPath, p));
   watcher.on('unlink', (p: string) => {
     if (isNuking()) return;
-    const name = p.split(/[\/\\]/).pop();
-    if (name) getDb().prepare('DELETE FROM photos WHERE folder_path = @fp AND name = @n').run({ fp: folderPath, n: name });
+    try {
+      const name = p.split(/[\/\\]/).pop();
+      if (name) getDb().prepare('DELETE FROM photos WHERE folder_path = @fp AND name = @n').run({ fp: folderPath, n: name });
+    } catch (err) {
+      console.error(`[WATCHER] Failed to remove photo ${p}:`, err);
+    }
   });
   watchers.set(folderId, watcher);
 }
