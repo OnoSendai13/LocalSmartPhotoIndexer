@@ -19,6 +19,9 @@ const THUMBNAIL_MAX_PX = 480;    // Same as frontend for consistency
 const JPEG_QUALITY = 0.88;
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'minicpm-v';
+const OLLAMA_TIMEOUT_MS = 120000; // 2 minute timeout per request
+const OLLAMA_MAX_RETRIES = 3;     // Retry on transient failures
+const OLLAMA_RETRY_DELAY_MS = 2000; // Wait between retries
 
 // ─── State ─────────────────────────────────────────────────────────────────────
 
@@ -342,7 +345,42 @@ async function processPhoto(photo: PhotoRow): Promise<void> {
 
 // ─── Internal: Ollama Analysis ────────────────────────────────────────────────
 
+/**
+ * Call Ollama with retry logic and timeout.
+ * Retries on transient failures (connection refused, timeout, 5xx).
+ * Falls back to ['Uncategorized'] after max retries instead of throwing.
+ */
 async function analyzeWithOllama(base64Data: string, mimeType: string): Promise<string[]> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= OLLAMA_MAX_RETRIES; attempt++) {
+    try {
+      const result = await callOllamaOnce(base64Data, mimeType);
+      if (attempt > 1) {
+        console.log(`[OLLAMA] ✅ Succeeded on attempt ${attempt}`);
+      }
+      return result;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.warn(`[OLLAMA] Attempt ${attempt}/${OLLAMA_MAX_RETRIES} failed: ${lastError.message}`);
+
+      if (attempt < OLLAMA_MAX_RETRIES) {
+        const delay = OLLAMA_RETRY_DELAY_MS * attempt; // Exponential backoff
+        console.log(`[OLLAMA] Retrying in ${delay / 1000}s...`);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+  }
+
+  // All retries exhausted — return fallback instead of crashing
+  console.error(`[OLLAMA] All ${OLLAMA_MAX_RETRIES} attempts failed. Last error: ${lastError?.message}`);
+  return ['Uncategorized'];
+}
+
+/**
+ * Single attempt to call Ollama API with timeout.
+ */
+async function callOllamaOnce(base64Data: string, mimeType: string): Promise<string[]> {
   const prompt = `Analyze this image and classify it using ONLY tags from this list:
 People: Portrait, Group, Family, Couple, Selfie, People
 Animals: Dog, Cat, Bird, Horse, Animal, Wildlife, Lion, Elephant, Giraffe, Zebra, Monkey, Fish, Insect
@@ -357,21 +395,30 @@ Return a JSON array of 3-8 relevant tags. Example: ["Landscape", "Mountain", "Su
 
 Respond with ONLY a JSON array, no other text.`;
 
-  const response = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/generate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: OLLAMA_MODEL,
-      prompt,
-      stream: false,
-      images: [base64Data],
-      format: 'json',
-      options: {
-        temperature: 0.3,
-        top_p: 0.9,
-      },
-    }),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
+
+  let response;
+  try {
+    response = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        prompt,
+        stream: false,
+        images: [base64Data],
+        format: 'json',
+        options: {
+          temperature: 0.3,
+          top_p: 0.9,
+        },
+      }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     throw new Error(`Ollama error: ${response.status} ${response.statusText}`);
