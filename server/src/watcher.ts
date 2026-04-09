@@ -121,8 +121,20 @@ export function startAllWatchers() {
 
 export function startPeriodicScans() {
   if (periodicInterval) return;
-  periodicInterval = setInterval(() => {
-    const folders = getDb().prepare('SELECT * FROM folders').all() as { id: string; path: string }[];
-    for (const f of folders) scanFolder(f.id, f.path);
-  }, SCAN_INTERVAL_MS);
+
+  const runScans = async () => {
+    try {
+      const folders = getDb().prepare('SELECT * FROM folders').all() as { id: string; path: string }[];
+      // Run scans sequentially to avoid database contention
+      for (const f of folders) {
+        await scanFolder(f.id, f.path).catch(err => {
+          console.error(`[WATCHER] Periodic scan error for folder "${f.path}":`, err);
+        });
+      }
+    } catch (err) {
+      console.error('[WATCHER] Failed to fetch folders for periodic scan:', err);
+    }
+  };
+
+  periodicInterval = setInterval(runScans, SCAN_INTERVAL_MS);
 }
