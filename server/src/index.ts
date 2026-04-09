@@ -146,6 +146,9 @@ async function start() {
     console.warn('[WATCHER] Could not start watchers:', err);
   }
 
+  // Enable auto-restart for processor so indexing resumes after crashes
+  processor.enableAutoRestart();
+
   const server = serve({ fetch: app.fetch, port: PORT });
   console.log(`Server running on http://localhost:${PORT}`);
 }

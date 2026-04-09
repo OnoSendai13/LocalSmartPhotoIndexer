@@ -23,6 +23,7 @@ processorRouter.post('/process/start', async (c) => {
 // POST /api/process/stop — Graceful shutdown
 processorRouter.post('/process/stop', async (c) => {
   try {
+    processor.disableAutoRestart();
     await processor.stopProcessing();
     const status = processor.getProgress();
     return c.json({ success: true, done: status.done, total: status.total });

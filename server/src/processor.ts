@@ -26,6 +26,8 @@ let _state: ProcessingState | null = null;
 let activeWorkers = 0;
 let isRunning = false;
 let stopRequested = false;
+let autoRestartEnabled = false;
+let autoRestartTimeout: ReturnType<typeof setTimeout> | null = null;
 
 /** Check if the processor is currently running (for watcher to skip scans). */
 export function isProcessorRunning(): boolean {
@@ -127,10 +129,12 @@ export async function startProcessing(): Promise<{ success: true; total: number 
     setState({ status: 'idle' });
     const s = getState();
     console.log(`[PROCESSOR] ✅ All processing complete! Indexed ${s.done} photos.`);
+    if (autoRestartEnabled) checkAndAutoRestart();
   }).catch(err => {
     console.error('[PROCESSOR] Worker error:', err);
     isRunning = false;
     setState({ status: 'idle' });
+    if (autoRestartEnabled) checkAndAutoRestart();
   });
 
   return { success: true, total: pendingCount };
@@ -145,6 +149,7 @@ export async function stopProcessing(): Promise<void> {
   }
 
   console.log('[PROCESSOR] Stopping processing (draining active workers)...');
+  disableAutoRestart();
   stopRequested = true;
   setState({ status: 'stopping' });
 
@@ -190,6 +195,55 @@ export async function resetAllDone(): Promise<{ success: true; reset: number }> 
   saveDb();
   console.log(`[PROCESSOR] Reset ${result.changes} photos to pending`);
   return { success: true, reset: result.changes };
+}
+
+/**
+ * Enable automatic restart of processing if it stops while pending photos remain.
+ * Called by the server startup so that indexing resumes automatically after errors.
+ */
+export function enableAutoRestart(): void {
+  autoRestartEnabled = true;
+  console.log('[PROCESSOR] Auto-restart enabled — will resume if processing stops with pending photos');
+}
+
+/**
+ * Disable automatic restart. Called when the user explicitly clicks STOP.
+ */
+export function disableAutoRestart(): void {
+  autoRestartEnabled = false;
+  if (autoRestartTimeout) {
+    clearTimeout(autoRestartTimeout);
+    autoRestartTimeout = null;
+  }
+  console.log('[PROCESSOR] Auto-restart disabled');
+}
+
+/**
+ * Check if there are still pending photos and auto-restart processing after a delay.
+ * This recovers from unexpected crashes without user intervention.
+ */
+function checkAndAutoRestart(): void {
+  if (stopRequested) return; // User explicitly stopped
+  if (!autoRestartEnabled) return;
+
+  try {
+    const db = getDb();
+    const pending = db.prepare('SELECT COUNT(*) as cnt FROM photos WHERE status = @status').get({ status: 'pending' }) as { cnt: number };
+
+    if (pending.cnt > 0) {
+      console.log(`[PROCESSOR] 🔄 ${pending.cnt} pending photos remain — auto-restarting in 5s...`);
+      autoRestartTimeout = setTimeout(() => {
+        if (autoRestartEnabled && !isRunning) {
+          console.log('[PROCESSOR] 🚀 Auto-restarting processing...');
+          startProcessing();
+        }
+      }, 5000);
+    } else {
+      console.log('[PROCESSOR] ✅ No pending photos — no auto-restart needed');
+    }
+  } catch (err) {
+    console.error('[PROCESSOR] Failed to check for auto-restart:', err);
+  }
 }
 
 // ─── Internal: Worker Loop ─────────────────────────────────────────────────────
