@@ -33,8 +33,14 @@ let _frozen = false;
 function save(): void {
   if (_frozen) return;   // <-- key guard: block stale writes after a clear
   if (_db) {
-    const data = _db.export();
-    writeFileSync(dbPath, Buffer.from(data));
+    try {
+      const data = _db.export();
+      writeFileSync(dbPath, Buffer.from(data));
+    } catch (err) {
+      console.error('[DB] Failed to save database:', err);
+      // Don't throw — a failed save shouldn't crash the entire process.
+      // The in-memory DB is still valid; the next save attempt may succeed.
+    }
   }
 }
 
