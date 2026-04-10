@@ -150,35 +150,22 @@ const App: React.FC = () => {
         // Load registered folders
         await refreshFolders();
 
-        // ─── Load photos from backend DB (paginated, 200 at a time) ───────────
-        // Loads in batches to avoid freezing the browser with 10k+ photos.
-        // • 'done'    → shown with their tags and backend preview URL
-        // • 'pending' → shown as grey placeholders
-        // • 'error'   → shown with error indicator
-        const pageSize = 200;
-        const allSavedPhotos: StoredPhoto[] = [];
-        let loadedCount = 0;
+        // ─── Load photos from backend DB ──────────────────────────────────────
+        // Only load first 100 to avoid freezing the browser with 10k+ photos.
+        // The backend still indexes ALL photos; frontend just shows a sample.
+        const savedPhotos = await getAllPhotos();
+        const displayLimit = 100;
+        const totalCount = savedPhotos.length;
 
-        while (true) {
-          const page = await getPhotosPage(pageSize, allSavedPhotos.length);
-          allSavedPhotos.push(...page.photos);
-          loadedCount = page.photos.length;
-          if (loadedCount < pageSize) break;
-        }
+        if (totalCount > 0) {
+          const samplePhotos = savedPhotos.slice(0, displayLimit);
+          console.log(`📚 Loaded ${totalCount} photos from DB (showing first ${samplePhotos.length})`);
 
-        const savedPhotos = allSavedPhotos;
-
-        if (savedPhotos.length > 0) {
-          console.log(`📚 Loaded ${savedPhotos.length} photos from DB (${savedPhotos.filter(p => p.status === 'done').length} done, ${savedPhotos.filter(p => p.status === 'pending').length} pending)`);
-
-          const loadedPhotos: Photo[] = savedPhotos.map(sp => {
-            // Use the stored thumbnail as-is — any non-empty string is valid.
-            // The old "length > 4000" guard was wrong: a small/simple image can
-            // legitimately produce a short base64 JPEG even at 480px.
+          const loadedPhotos: Photo[] = samplePhotos.map(sp => {
             const thumb = sp.thumbnail || '';
             return {
               id: sp.id,
-              file: new File([], sp.name), // size=0 → LazyImage uses thumbnail or /preview
+              file: new File([], sp.name),
               previewUrl: thumb,
               name: sp.name,
               path: sp.path,
