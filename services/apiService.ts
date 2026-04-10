@@ -173,6 +173,12 @@ export async function rewriteExifTags(folderPath?: string): Promise<{ written: n
   return res.json();
 }
 
+export async function getAllTags(): Promise<{ name: string; count: number }[]> {
+  const res = await fetch(`${API_BASE}/photos/tags`);
+  if (!res.ok) throw new Error(`GET /photos/tags failed: ${res.status}`);
+  return res.json();
+}
+
 // ─── Stats ──────────────────────────────────────────────────────────────────
 
 export interface Stats {

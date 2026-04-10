@@ -14,6 +14,7 @@ import {
   savePhotos,
   getAllPhotos,
   getPhotosPage,
+  getAllTags,
   getSettings,
   saveSettings,
   exportData,
@@ -56,6 +57,7 @@ declare module 'react' {
 const App: React.FC = () => {
   // Application State
   const [photos, setPhotos] = useState<Photo[]>([]);
+  const [allTagCounts, setAllTagCounts] = useState<{name: string, count: number}[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
   
@@ -180,7 +182,16 @@ const App: React.FC = () => {
 
           setPhotos(loadedPhotos);
         }
-        
+
+        // Load all tags from backend (for sidebar category list)
+        try {
+          const tagCounts = await getAllTags();
+          setAllTagCounts(tagCounts);
+          console.log(`🏷️ Loaded ${tagCounts.length} unique tags`);
+        } catch (err) {
+          console.warn('Failed to load tags:', err);
+        }
+
         // Try to restore File System Access (Chrome/Edge only)
         if (fsaSupported) {
           console.log('🔗 Checking for saved folder access...');
@@ -366,8 +377,13 @@ const App: React.FC = () => {
     await saveSettings(updated);
   };
 
-  // Derived state: Unique categories
+  // Derived state: Unique categories (from all indexed photos, not just displayed ones)
   const categories: Category[] = useMemo(() => {
+    // Use allTagCounts if available (loaded from backend), otherwise fall back to computing from displayed photos
+    if (allTagCounts.length > 0) {
+      return allTagCounts.map(t => ({ name: t.name, count: t.count }));
+    }
+    // Fallback: compute from displayed photos
     const catMap = new Map<string, number>();
     photos.forEach(p => {
       p.tags.forEach(tag => {
@@ -377,7 +393,7 @@ const App: React.FC = () => {
     return Array.from(catMap.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count);
-  }, [photos]);
+  }, [allTagCounts, photos]);
 
   const filteredPhotos = useMemo(() => {
     let result = photos;

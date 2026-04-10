@@ -115,6 +115,28 @@ photosRouter.get('/photos/count', (c) => {
   return c.json({ total: result.cnt });
 });
 
+// GET /api/photos/tags — returns all unique tags with counts (for sidebar)
+photosRouter.get('/photos/tags', (c) => {
+  const db = getDb();
+  // Get all tags from done photos
+  const rows = db.prepare("SELECT tags FROM photos WHERE status = 'done' AND tags != '[]'").all() as { tags: string }[];
+  const tagCounts = new Map<string, number>();
+  for (const row of rows) {
+    try {
+      const tags: string[] = JSON.parse(row.tags);
+      for (const tag of tags) {
+        if (tag && tag !== 'Uncategorized' && tag !== 'Error-EmptyResponse') {
+          tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
+        }
+      }
+    } catch { /* skip malformed */ }
+  }
+  const result = Array.from(tagCounts.entries())
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count);
+  return c.json(result);
+});
+
 // GET /api/photos/:id
 photosRouter.get('/photos/:id', (c) => {
   const db = getDb();
