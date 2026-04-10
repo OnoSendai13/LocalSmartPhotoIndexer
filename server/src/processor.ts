@@ -260,13 +260,13 @@ function checkAndAutoRestart(): void {
     const pending = db.prepare('SELECT COUNT(*) as cnt FROM photos WHERE status = @status').get({ status: 'pending' }) as { cnt: number };
 
     if (pending.cnt > 0) {
-      console.log(`[PROCESSOR] 🔄 ${pending.cnt} pending photos remain — auto-restarting in 5s...`);
+      console.log(`[PROCESSOR] 🔄 ${pending.cnt} pending photos remain — auto-restarting in 1s...`);
       autoRestartTimeout = setTimeout(() => {
         if (autoRestartEnabled && !isRunning) {
           console.log('[PROCESSOR] 🚀 Auto-restarting processing...');
           startProcessing();
         }
-      }, 5000);
+      }, 1000);
     } else {
       console.log('[PROCESSOR] ✅ No pending photos — no auto-restart needed');
     }
