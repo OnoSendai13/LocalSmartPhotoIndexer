@@ -60,12 +60,14 @@ function rowToPhoto(row: PhotoRow): Photo {
   };
 }
 
-// GET /api/photos?status=done&folderPath=...&tag=...
+// GET /api/photos?status=done&folderPath=...&tag=...&limit=200&offset=0
 photosRouter.get('/photos', (c) => {
   const db = getDb();
   const status = c.req.query('status');
   const folderPath = c.req.query('folderPath');
   const tag = c.req.query('tag');
+  const limit = Math.min(parseInt(c.req.query('limit') || '200', 10), 500);
+  const offset = Math.max(parseInt(c.req.query('offset') || '0', 10), 0);
 
   let sql = 'SELECT * FROM photos WHERE 1=1';
   const params: Record<string, unknown> = {};
@@ -83,10 +85,34 @@ photosRouter.get('/photos', (c) => {
     params.tag = `%"${tag}"%`;
   }
 
-  sql += ' ORDER BY created_at DESC';
+  sql += ' ORDER BY created_at DESC LIMIT @limit OFFSET @offset';
+  params.limit = limit;
+  params.offset = offset;
 
   const rows = db.prepare(sql).all(params) as PhotoRow[];
   return c.json(rows.map(rowToPhoto));
+});
+
+// GET /api/photos/count?status=...&folderPath=... — returns total count for pagination
+photosRouter.get('/photos/count', (c) => {
+  const db = getDb();
+  const status = c.req.query('status');
+  const folderPath = c.req.query('folderPath');
+
+  let sql = 'SELECT COUNT(*) as cnt FROM photos WHERE 1=1';
+  const params: Record<string, unknown> = {};
+
+  if (status) {
+    sql += ' AND status = @status';
+    params.status = status;
+  }
+  if (folderPath) {
+    sql += ' AND folder_path = @folderPath';
+    params.folderPath = folderPath;
+  }
+
+  const result = db.prepare(sql).get(params) as { cnt: number };
+  return c.json({ total: result.cnt });
 });
 
 // GET /api/photos/:id

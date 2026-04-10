@@ -41,10 +41,37 @@ export interface AppSettings {
 
 // ─── Photos ─────────────────────────────────────────────────────────────────
 
-export async function getAllPhotos(): Promise<Photo[]> {
-  const res = await fetch(`${API_BASE}/photos`);
+export interface PaginatedPhotos {
+  photos: Photo[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export async function getPhotosPage(limit = 200, offset = 0): Promise<PaginatedPhotos> {
+  const res = await fetch(`${API_BASE}/photos?limit=${limit}&offset=${offset}`);
   if (!res.ok) throw new Error(`GET /photos failed: ${res.status}`);
-  return res.json();
+  const photos = await res.json();
+  // Get total count
+  const countRes = await fetch(`${API_BASE}/photos/count`);
+  const countData = countRes.ok ? await countRes.json() : { total: photos.length };
+  return { photos, total: countData.total, limit, offset };
+}
+
+/** Load ALL photos by fetching pages sequentially. Use sparingly — prefer getPhotosPage for pagination. */
+export async function getAllPhotos(): Promise<Photo[]> {
+  const batchSize = 500;
+  const all: Photo[] = [];
+  let offset = 0;
+  while (true) {
+    const res = await fetch(`${API_BASE}/photos?limit=${batchSize}&offset=${offset}`);
+    if (!res.ok) throw new Error(`GET /photos failed: ${res.status}`);
+    const page: Photo[] = await res.json();
+    all.push(...page);
+    if (page.length < batchSize) break;
+    offset += batchSize;
+  }
+  return all;
 }
 
 export async function getPhoto(id: string): Promise<Photo | null> {

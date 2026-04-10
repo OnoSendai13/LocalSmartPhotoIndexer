@@ -190,13 +190,37 @@ export function getProgress(): ProcessingStatus {
 }
 
 /**
+ * Backup the database to a .bak file. Called automatically before destructive operations.
+ */
+export function backupDb(): void {
+  const { copyFileSync } = require('fs');
+  const { join } = require('path');
+  const dbPath = join(process.cwd(), 'data', 'photo-index.db');
+  const backupPath = dbPath + '.bak';
+  try {
+    copyFileSync(dbPath, backupPath);
+    console.log(`[BACKUP] Database backed up to ${backupPath}`);
+  } catch (err) {
+    console.error('[BACKUP] Failed to create backup:', err);
+  }
+}
+
+/**
  * Reset all 'done' photos back to 'pending' (for re-indexing).
+ * IMPORTANT: preserves tags and indexed_at so data is not lost.
+ * Creates a backup before running.
  */
 export async function resetAllDone(): Promise<{ success: true; reset: number }> {
+  // Create a backup first — never run destructive ops without one
+  backupDb();
+
   const db = getDb();
-  const result = db.prepare("UPDATE photos SET status = 'pending', tags = '[]', error_message = NULL, indexed_at = NULL, updated_at = unixepoch('now') WHERE status = 'done'").run();
+  // Only reset status — keep tags, indexed_at, thumbnails intact
+  const result = db.prepare(
+    "UPDATE photos SET status = 'pending', error_message = NULL, updated_at = unixepoch('now') WHERE status = 'done'"
+  ).run();
   saveDb();
-  console.log(`[PROCESSOR] Reset ${result.changes} photos to pending`);
+  console.log(`[PROCESSOR] Reset ${result.changes} photos to pending (tags preserved)`);
   return { success: true, reset: result.changes };
 }
 

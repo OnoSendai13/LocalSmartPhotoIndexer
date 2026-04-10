@@ -13,6 +13,7 @@ import {
   savePhoto,
   savePhotos,
   getAllPhotos,
+  getPhotosPage,
   getSettings,
   saveSettings,
   exportData,
@@ -149,13 +150,23 @@ const App: React.FC = () => {
         // Load registered folders
         await refreshFolders();
 
-        // ─── Load ALL photos from backend DB ─────────────────────────────────
-        // All photos (done + pending + error) are loaded and displayed immediately.
+        // ─── Load photos from backend DB (paginated, 200 at a time) ───────────
+        // Loads in batches to avoid freezing the browser with 10k+ photos.
         // • 'done'    → shown with their tags and backend preview URL
-        // • 'pending' → shown as grey placeholders; they will be re-queued below
-        //               once the AI connection is confirmed
+        // • 'pending' → shown as grey placeholders
         // • 'error'   → shown with error indicator
-        const savedPhotos = await getAllPhotos();
+        const pageSize = 200;
+        const allSavedPhotos: StoredPhoto[] = [];
+        let loadedCount = 0;
+
+        while (true) {
+          const page = await getPhotosPage(pageSize, allSavedPhotos.length);
+          allSavedPhotos.push(...page.photos);
+          loadedCount = page.photos.length;
+          if (loadedCount < pageSize) break;
+        }
+
+        const savedPhotos = allSavedPhotos;
 
         if (savedPhotos.length > 0) {
           console.log(`📚 Loaded ${savedPhotos.length} photos from DB (${savedPhotos.filter(p => p.status === 'done').length} done, ${savedPhotos.filter(p => p.status === 'pending').length} pending)`);
