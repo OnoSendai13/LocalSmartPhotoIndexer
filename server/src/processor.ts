@@ -31,6 +31,8 @@ let isRunning = false;
 let stopRequested = false;
 let autoRestartEnabled = false;
 let autoRestartTimeout: ReturnType<typeof setTimeout> | null = null;
+let _photosSinceLastSave = 0;
+const SAVE_INTERVAL = 10; // Batch DB writes: save every N photos instead of after each one
 
 /** Check if the processor is currently running (for watcher to skip scans). */
 export function isProcessorRunning(): boolean {
@@ -500,6 +502,13 @@ function markPhotoDone(photoId: string, tags: string[], thumbnail: string | null
     WHERE id = @id
   `).run({ tags: tagsJson, thumbnail, now, id: photoId });
 
+  // Batch DB writes: only flush to disk every SAVE_INTERVAL photos
+  _photosSinceLastSave++;
+  if (_photosSinceLastSave >= SAVE_INTERVAL) {
+    saveDb();
+    _photosSinceLastSave = 0;
+  }
+
   // Write EXIF tags to file
   const photo = db.prepare('SELECT * FROM photos WHERE id = @id').get({ id: photoId }) as PhotoRow | undefined;
   if (photo && tags.length > 0) {
@@ -513,8 +522,6 @@ function markPhotoDone(photoId: string, tags: string[], thumbnail: string | null
       });
     }
   }
-
-  saveDb();
 }
 
 function markPhotoError(photoId: string, errorMessage: string): void {
