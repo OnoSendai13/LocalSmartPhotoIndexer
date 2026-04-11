@@ -2,7 +2,6 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import * as net from 'net';
-import { execSync } from 'child_process';
 import { initDb, closeDb } from './db.js';
 import * as processor from './processor.js';
 import { photosRouter } from './routes/photos.js';
@@ -11,51 +10,29 @@ import { settingsRouter } from './routes/settings.js';
 import { processorRouter } from './routes/processor.js';
 import { startAllWatchers, startPeriodicScans, stopAllWatchers } from './watcher.js';
 
-/** Check if a port is in use, and optionally free it using PowerShell/taskkill.
- *  Windows-only — uses native PowerShell commands. */
-async function ensurePortFree(port: number, force = false): Promise<void> {
-  return new Promise((resolve) => {
+/** Check if port is free, wait if needed (max 10s). */
+async function ensurePortFree(port: number): Promise<void> {
+  const maxWait = 10000;
+  const start = Date.now();
+  
+  while (Date.now() - start < maxWait) {
     const server = net.createServer();
-    server.once('error', (_err: NodeJS.ErrnoException) => {
-      if (_err.code === 'EADDRINUSE') {
-        if (force) {
-          try {
-            // Windows PowerShell: use netstat to find PID, then taskkill
-            const out = execSync(
-              `netstat -ano | findstr :${port} | findstr LISTENING`,
-              { encoding: 'utf8', shell: 'powershell.exe' }
-            ).trim();
-            // Format: "  TCP  0.0.0.0:6800  0.0.0.0:0  LISTENING  12345"
-            const match = out.match(/LISTENING\s+(\d+)/);
-            const pid = match ? parseInt(match[1], 10) : undefined;
-
-            if (pid) {
-              console.warn(`[PORT] Port ${port} in use by PID ${pid} — killing...`);
-              execSync(`taskkill /PID ${pid} /F`, { shell: 'powershell.exe' });
-              console.warn(`[PORT] Process killed. Retrying in 1s...`);
-              setTimeout(resolve, 1000);
-            } else {
-              console.warn(`[PORT] Could not find PID for port ${port} — assuming free`);
-              resolve();
-            }
-          } catch (killErr) {
-            console.error(`[PORT] Failed to kill process on port ${port}:`, killErr);
-            process.exit(1);
-          }
-        } else {
-          console.error(`[PORT] Port ${port} is already in use. Run with FORCE_PORT=true to auto-kill.`);
-          process.exit(1);
-        }
-      } else {
-        resolve(); // different error, port is probably fine
-      }
+    const free = await new Promise<boolean>((resolve) => {
+      server.once('error', (err: NodeJS.ErrnoException) => {
+        resolve(err.code !== 'EADDRINUSE');
+      });
+      server.once('listening', () => {
+        server.close();
+        resolve(true);
+      });
+      server.listen(port);
     });
-    server.once('listening', () => {
-      server.close();
-      resolve();
-    });
-    server.listen(port);
-  });
+    if (free) return;
+    console.warn(`[PORT] Port ${port} in use, waiting...`);
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  console.error(`[PORT] Port ${port} still in use after ${maxWait}ms. Kill the process manually or change PORT in .env`);
+  process.exit(1);
 }
 
 const app = new Hono();
@@ -128,9 +105,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 async function start() {
-  // Ensure port is free (auto-kill previous process if FORCE_PORT=true)
-  const force = process.env.FORCE_PORT === 'true';
-  await ensurePortFree(PORT, force);
+  await ensurePortFree(PORT);
 
   // Init SQLite (async — must load WASM first)
   await initDb();

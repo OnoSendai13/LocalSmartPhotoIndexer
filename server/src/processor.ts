@@ -9,7 +9,7 @@ import { getDb, saveDb, saveProcessingState, loadProcessingState, ProcessingStat
 import { writeTagsToFile } from './exif.js';
 import { resizeToThumbnail, isRawFormat, getMimeType } from './image.js';
 import { findClosestTag, validateTags } from './tags.js';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import path from 'path';
 
 // ─── Configuration ─────────────────────────────────────────────────────────────
@@ -22,6 +22,24 @@ const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'minicpm-v';
 const OLLAMA_TIMEOUT_MS = 120000; // 2 minute timeout per request
 const OLLAMA_MAX_RETRIES = 3;     // Retry on transient failures
 const OLLAMA_RETRY_DELAY_MS = 2000; // Wait between retries
+
+function findFileRecursive(dirPath: string, fileName: string, maxDepth = 10): string | null {
+  if (maxDepth <= 0) return null;
+  let found: string | null = null;
+  try {
+    const entries = readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (found) break;
+      const full = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        found = findFileRecursive(full, fileName, maxDepth - 1);
+      } else if (entry.isFile() && entry.name === fileName) {
+        found = full;
+      }
+    }
+  } catch { /* ignore permission errors */ }
+  return found;
+}
 
 // ─── State ─────────────────────────────────────────────────────────────────────
 
@@ -339,6 +357,15 @@ async function processPhoto(photo: PhotoRow): Promise<void> {
     // Try with forward slashes (cross-platform)
     fullPath = photo.folder_path + '/' + photo.name;
   }
+  if (!fullPath || !existsSync(fullPath)) {
+    // Fallback: recursive search in subdirectories
+    console.warn(`[PROCESSOR] Path not found, searching recursively: ${photo.name}`);
+    const found = findFileRecursive(photo.folder_path, photo.name);
+    if (found) {
+      fullPath = found;
+      console.log(`[PROCESSOR] ✅ Found via recursive search: ${found}`);
+    }
+  }
 
   if (!fullPath || !existsSync(fullPath)) {
     throw new Error(`File not found: ${photo.name} (tried: ${photo.path}, ${path.win32.join(photo.folder_path, photo.name)})`);
@@ -397,9 +424,9 @@ async function analyzeWithOllama(base64Data: string, mimeType: string): Promise<
     }
   }
 
-  // All retries exhausted — return fallback instead of crashing
+  // All retries exhausted — throw error so photo stays 'pending' for retry
   console.error(`[OLLAMA] All ${OLLAMA_MAX_RETRIES} attempts failed. Last error: ${lastError?.message}`);
-  return ['Uncategorized'];
+  throw lastError ?? new Error('Ollama unavailable');
 }
 
 /**
@@ -526,7 +553,14 @@ function markPhotoError(photoId: string, errorMessage: string): void {
     WHERE id = @id
   `).run({ errorMessage, id: photoId });
 
-  // Count errors as "processed" to avoid reprocessing
+  // For transient errors (Ollama down), reset to 'pending' so it retries automatically
+  if (errorMessage.includes('ollama') || errorMessage.includes('fetch') || errorMessage.includes('timeout') || errorMessage.includes('ECONNREFUSED') || errorMessage.includes('UND_ERR')) {
+    db.prepare(`UPDATE photos SET status = 'pending', error_message = NULL WHERE id = @id`).run({ id: photoId });
+    console.warn(`[PROCESSOR] Transient error for ${photoId} — reset to pending for retry`);
+    return; // Don't increment done
+  }
+
+  // Count permanent errors as "processed" to avoid reprocessing
   const s = getState();
   _state!.done = s.done + 1;
   saveDb();

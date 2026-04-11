@@ -258,6 +258,9 @@ const App: React.FC = () => {
     try {
       await startProcessing();
       console.log('▶️ Backend processing started');
+      // Immediately refresh status to show progress bar
+      const status = await getProcessingStatus();
+      setProcessingStatus(status);
     } catch (err) {
       console.error('Failed to start backend processing:', err);
     }

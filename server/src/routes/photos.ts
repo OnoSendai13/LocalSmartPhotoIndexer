@@ -469,6 +469,16 @@ photosRouter.post('/photos/reset-all', (c) => {
   return c.json({ success: true, reset: result.changes, doneCount: done.cnt, errorCount: errors.cnt });
 });
 
+// POST /api/photos/reset-errors — reset only error photos to pending (for retry)
+photosRouter.post('/photos/reset-errors', (c) => {
+  const db = getDb();
+  const errors = db.prepare("SELECT COUNT(*) as cnt FROM photos WHERE status = 'error'").get() as { cnt: number };
+  const result = db.prepare("UPDATE photos SET status = 'pending', error_message = NULL, updated_at = unixepoch('now') WHERE status = 'error'").run();
+  saveDb();
+  console.log(`[RESET] Reset ${result.changes} error photos to pending for retry`);
+  return c.json({ success: true, reset: result.changes, errorCount: errors.cnt });
+});
+
 // POST /api/photos/sync-exif
 // Reads EXIF/IPTC/XMP tags from each photo file and:
 //   1. Injects them into the DB for photos that have no tags yet (status='done' or status='pending' with no tags)

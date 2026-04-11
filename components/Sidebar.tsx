@@ -78,7 +78,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   connectionStatus = 'unknown',
 }) => {
   const percentComplete = totalPhotos > 0 ? Math.round((processedCount / totalPhotos) * 100) : 0;
-  const pendingPhotos = totalPhotos - processedCount;
+  const pendingPhotos = processingStatus ? processingStatus.total - processingStatus.done : totalPhotos - processedCount;
 
   return (
     <div className="w-64 bg-zinc-900 border-r border-zinc-800 flex flex-col h-full shrink-0">
