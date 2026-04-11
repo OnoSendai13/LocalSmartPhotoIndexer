@@ -539,10 +539,9 @@ const App: React.FC = () => {
     onProgress: (current: number, total: number) => void
   ): Promise<FileList | null> => {
     const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']);
-    const RAW_EXTS = new Set(['.cr2','.cr3','.nef','.nrw','.arw','.srf','.orf','.rw2',
+    const EXCLUDED_EXTS = new Set(['.cr2','.cr3','.nef','.nrw','.arw','.srf','.orf','.rw2',
       '.raf','.dng','.raw','.rwl','.pef','.srw','.x3f','.3fr','.iiq','.erf','.kdc',
       '.dcr','.tif','.tiff','.psd','.psb']);
-    const ALL_EXTS = new Set([...IMAGE_EXTS, ...RAW_EXTS]);
 
     const allFiles: File[] = [];
 
@@ -550,7 +549,7 @@ const App: React.FC = () => {
       for await (const entry of (dirHandle as any).values()) {
         if (entry.kind === 'file') {
           const ext = entry.name.toLowerCase().match(/\.[^.]+$/)?.[0];
-          if (ext && ALL_EXTS.has(ext)) {
+          if (ext && IMAGE_EXTS.has(ext) && !EXCLUDED_EXTS.has(ext)) {
             const file = await entry.getFile();
             allFiles.push(file);
             if (allFiles.length % 100 === 0) {
