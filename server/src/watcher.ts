@@ -57,6 +57,13 @@ export async function scanFolder(folderId: string, folderPath: string): Promise<
   try { db = getDb(); } catch { return { newPhotos: 0 }; }
   if (!existsSync(folderPath)) return { newPhotos: 0 };
 
+  // Quick check: if DB already has photos for this folder, skip full scan (expensive)
+  const existingCount = (db.prepare('SELECT COUNT(*) as cnt FROM photos WHERE folder_path = @fp').get({ fp: folderPath }) as { cnt: number }).cnt;
+  if (existingCount > 0) {
+    console.log(`🔍 Skipping full scan — ${existingCount} photos already in DB for this folder`);
+    return { newPhotos: 0 };
+  }
+
   console.log(`🔍 Scanning: ${folderPath}`);
   let newPhotos = 0;
 
