@@ -80,8 +80,10 @@ app.get('/api/health', (c) => c.json({ status: 'ok' }));
 app.get('/api/debug/db', async (c) => {
   try {
     const { existsSync, readFileSync, statSync } = await import('fs');
-    const { join } = await import('path');
-    const dbFile = join(process.cwd(), 'data', 'photo-index.db');
+    const { join, dirname } = await import('path');
+    const { fileURLToPath } = await import('url');
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    const dbFile = join(__dirname, '../data', 'photo-index.db');
     if (!existsSync(dbFile)) {
       return c.json({ exists: false, message: 'DB file does not exist on disk' });
     }
@@ -110,7 +112,15 @@ const PORT = parseInt(process.env.PORT || '6800', 10);
 
 process.on('uncaughtException', (err) => {
   console.error('[UNCAUGHT EXCEPTION]', err);
-  // Don't exit — try to keep running
+  console.warn('[RECOVERY] Attempting graceful recovery...');
+  try {
+    processor.stopProcessing();
+    stopAllWatchers();
+  } catch (e) {
+    console.error('[RECOVERY] Failed to stop services:', e);
+  }
+  console.warn('[RECOVERY] Process will exit to allow supervisor to restart');
+  process.exit(1);
 });
 
 process.on('unhandledRejection', (reason) => {

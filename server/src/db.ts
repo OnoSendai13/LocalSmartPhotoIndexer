@@ -15,8 +15,9 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const wasmPath = path.resolve(__dirname, '../../server/node_modules/sql.js/dist/sql-wasm.wasm');
 
-const dataDir = path.join(process.cwd(), 'data');
+const dataDir = path.join(__dirname, '../data');
 const dbPath = path.join(dataDir, 'photo-index.db');
+const backupPath = dbPath + '.bak';
 
 let _db: import('sql.js').Database | null = null;
 
@@ -79,6 +80,19 @@ export function nukeDb(): void {
   const t = new Date().toISOString();
   console.log(`[NUKE ${t}] Starting — full in-memory DB replacement`);
 
+  // Step 0: create backup BEFORE nuking
+  try {
+    if (existsSync(dbPath)) {
+      if (existsSync(backupPath)) unlinkSync(backupPath);
+      const { copyFileSync } = require('fs');
+      copyFileSync(dbPath, backupPath);
+      const bakSize = statSync(backupPath).size;
+      console.log(`[NUKE] 💾 Backup created: ${backupPath} (${bakSize} bytes)`);
+    }
+  } catch (e) {
+    console.warn('[NUKE] ⚠️ Failed to create backup:', e);
+  }
+
   // Step 1: freeze save() + stash reference to old DB immediately
   _frozen = true;
   const oldDb = _db;
@@ -107,6 +121,64 @@ export function nukeDb(): void {
     throw e;
   } finally {
     _frozen = false;
+  }
+}
+
+/**
+ * Restore database from backup file.
+ * Replaces the current in-memory DB with the data from .bak file.
+ */
+export function restoreDb(): { success: boolean; photosRestored: number; foldersRestored: number; error?: string } {
+  try {
+    if (!existsSync(backupPath)) {
+      return { success: false, photosRestored: 0, foldersRestored: 0, error: 'No backup file found' };
+    }
+
+    const backupBuffer = readFileSync(backupPath);
+    const restoredDb = new _SQLCtor!.Database(backupBuffer);
+
+    const photosCount = (restoredDb.exec('SELECT COUNT(*) FROM photos')[0]?.values[0]?.[0] as number) ?? 0;
+    const foldersCount = (restoredDb.exec('SELECT COUNT(*) FROM folders')[0]?.values[0]?.[0] as number) ?? 0;
+
+    _frozen = true;
+    const oldDb = _db;
+    oldDb.close();
+
+    _db = restoredDb;
+    _wrapper = new Database();
+
+    const data = restoredDb.export();
+    writeFileSync(dbPath, Buffer.from(data));
+
+    _frozen = false;
+    console.log(`[RESTORE] ✅ Restored ${photosCount} photos and ${foldersCount} folders from backup`);
+
+    return { success: true, photosRestored: photosCount, foldersRestored: foldersCount };
+  } catch (e) {
+    _frozen = false;
+    const err = e instanceof Error ? e.message : String(e);
+    console.error('[RESTORE] ❌ Failed:', err);
+    return { success: false, photosRestored: 0, foldersRestored: 0, error: err };
+  }
+}
+
+/**
+ * Get information about the current backup file.
+ */
+export function getBackupInfo(): { exists: boolean; sizeBytes: number; sizeMB: string; createdAt: string | null } {
+  try {
+    if (!existsSync(backupPath)) {
+      return { exists: false, sizeBytes: 0, sizeMB: '0', createdAt: null };
+    }
+    const stats = statSync(backupPath);
+    return {
+      exists: true,
+      sizeBytes: stats.size,
+      sizeMB: (stats.size / (1024 * 1024)).toFixed(2),
+      createdAt: new Date(stats.mtimeMs).toLocaleString(),
+    };
+  } catch {
+    return { exists: false, sizeBytes: 0, sizeMB: '0', createdAt: null };
   }
 }
 

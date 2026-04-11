@@ -186,13 +186,34 @@ export interface Stats {
   indexedPhotos: number;
   pendingPhotos: number;
   errorPhotos: number;
+  processingPhotos: number;
   uniqueTags: number;
   folders: { path: string; name: string }[];
+  db: {
+    fileSizeBytes: number;
+    fileSizeKB: number;
+    fileSizeMB: string;
+    avgPhotoSizeBytes: number;
+    exists: boolean;
+    health: 'ok' | 'warning' | 'critical';
+  };
 }
 
 export async function getStats(): Promise<Stats> {
   const res = await fetch(`${API_BASE}/stats`);
   if (!res.ok) throw new Error(`GET /stats failed: ${res.status}`);
+  return res.json();
+}
+
+export async function clearErrors(): Promise<{ success: boolean; cleared: number; totalErrors: number }> {
+  const res = await fetch(`${API_BASE}/photos/clear-errors`, { method: 'POST' });
+  if (!res.ok) throw new Error(`POST /photos/clear-errors failed: ${res.status}`);
+  return res.json();
+}
+
+export async function resetAllPhotosStatus(): Promise<{ success: boolean; reset: number; doneCount: number; errorCount: number }> {
+  const res = await fetch(`${API_BASE}/photos/reset-all`, { method: 'POST' });
+  if (!res.ok) throw new Error(`POST /photos/reset-all failed: ${res.status}`);
   return res.json();
 }
 
@@ -414,4 +435,47 @@ export async function resetProcessingPhotos(): Promise<number> {
   } catch {
     return 0;
   }
+}
+
+// ─── Database Backup / Restore ──────────────────────────────────────────────
+
+export interface BackupInfo {
+  exists: boolean;
+  sizeBytes: number;
+  sizeMB: string;
+  createdAt: string | null;
+}
+
+export interface BackupResult {
+  success: boolean;
+  message?: string;
+  sizeBytes?: number;
+  sizeMB?: string;
+  createdAt?: string;
+  error?: string;
+}
+
+export interface RestoreResult {
+  success: boolean;
+  photosRestored: number;
+  foldersRestored: number;
+  error?: string;
+}
+
+export async function createBackup(): Promise<BackupResult> {
+  const res = await fetch(`${API_BASE}/db/backup`, { method: 'POST' });
+  if (!res.ok) throw new Error(`POST /db/backup failed: ${res.status}`);
+  return res.json();
+}
+
+export async function getBackupInfo(): Promise<BackupInfo> {
+  const res = await fetch(`${API_BASE}/db/backup-info`);
+  if (!res.ok) throw new Error(`GET /db/backup-info failed: ${res.status}`);
+  return res.json();
+}
+
+export async function restoreFromBackup(): Promise<RestoreResult> {
+  const res = await fetch(`${API_BASE}/db/restore`, { method: 'POST' });
+  if (!res.ok) throw new Error(`POST /db/restore failed: ${res.status}`);
+  return res.json();
 }

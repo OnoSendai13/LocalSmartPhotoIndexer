@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
-import { getDb, saveDb, nukeDb, isNuking } from '../db.js';
+import { getDb, saveDb, nukeDb, isNuking, restoreDb, getBackupInfo } from '../db.js';
 import { writeTagsToFile } from '../exif.js';
-import { resetWatchers } from '../watcher.js';
+import { resetWatchers, startAllWatchers, startPeriodicScans } from '../watcher.js';
 import path from 'path';
 import { existsSync, readFileSync, unlinkSync } from 'fs';
 
@@ -286,12 +286,13 @@ photosRouter.get('/photos/queue/pending', (c) => {
 });
 
 // GET /api/stats
-photosRouter.get('/stats', (c) => {
+photosRouter.get('/stats', async (c) => {
   const db = getDb();
   const total = (db.prepare('SELECT COUNT(*) as count FROM photos').get() as { count: number }).count;
   const indexed = (db.prepare("SELECT COUNT(*) as count FROM photos WHERE status = 'done'").get() as { count: number }).count;
   const pending = (db.prepare("SELECT COUNT(*) as count FROM photos WHERE status = 'pending'").get() as { count: number }).count;
   const errors = (db.prepare("SELECT COUNT(*) as count FROM photos WHERE status = 'error'").get() as { count: number }).count;
+  const processing = (db.prepare("SELECT COUNT(*) as count FROM photos WHERE status = 'processing'").get() as { count: number }).count;
 
   const rows = db.prepare("SELECT tags FROM photos WHERE status = 'done' AND tags != '[]'").all() as { tags: string }[];
   const tagSet = new Set<string>();
@@ -303,13 +304,42 @@ photosRouter.get('/stats', (c) => {
 
   const folders = db.prepare('SELECT DISTINCT folder_path as path, name FROM photos ORDER BY path').all();
 
+  let dbFileSize = 0;
+  let dbFileExists = false;
+  try {
+    const { statSync, existsSync } = await import('fs');
+    const { join, dirname } = await import('path');
+    const { fileURLToPath } = await import('url');
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    const dbFile = join(__dirname, '../data', 'photo-index.db');
+    dbFileExists = existsSync(dbFile);
+    if (dbFileExists) {
+      dbFileSize = statSync(dbFile).size;
+    }
+  } catch { /* ignore */ }
+
+  const avgPhotoSize = total > 0 ? Math.round(dbFileSize / total) : 0;
+  const health: 'ok' | 'warning' | 'critical' =
+    dbFileSize === 0 ? 'ok' :
+    avgPhotoSize > 100000 ? 'critical' :
+    avgPhotoSize > 50000 ? 'warning' : 'ok';
+
   return c.json({
     totalPhotos: total,
     indexedPhotos: indexed,
     pendingPhotos: pending,
     errorPhotos: errors,
+    processingPhotos: processing,
     uniqueTags: tagSet.size,
     folders,
+    db: {
+      fileSizeBytes: dbFileSize,
+      fileSizeKB: Math.round(dbFileSize / 1024),
+      fileSizeMB: (dbFileSize / (1024 * 1024)).toFixed(2),
+      avgPhotoSizeBytes: avgPhotoSize,
+      exists: dbFileExists,
+      health,
+    },
   });
 });
 
@@ -385,33 +415,46 @@ photosRouter.post('/photos/import', async (c) => {
   return c.json({ success: true, photosImported });
 });
 
-// DELETE /api/photos/all — wipe everything
+// DELETE /api/photos/all — wipe everything using nukeDb for reliability
 photosRouter.delete('/photos/all', async (c) => {
   console.log('[CLEAR] Nuclear clear starting...');
 
   try { await resetWatchers(); console.log('[CLEAR] Watchers stopped.'); } catch (e) { console.warn('[CLEAR] resetWatchers:', e); }
 
-  // Direct DELETE without transaction wrapper (avoids _inTransaction race)
   const beforeCount = getDb().prepare('SELECT COUNT(*) as cnt FROM photos').get() as { cnt: number };
-  console.log(`[CLEAR] Before: ${beforeCount.cnt} photos`);
+  const beforeFolders = getDb().prepare('SELECT COUNT(*) as cnt FROM folders').get() as { cnt: number };
 
-  getDb().prepare('DELETE FROM photos').run();
-  getDb().prepare('DELETE FROM folders').run();
+  nukeDb();
 
-  const afterCount = getDb().prepare('SELECT COUNT(*) as cnt FROM photos').get() as { cnt: number };
-  console.log(`[CLEAR] After DELETE: ${afterCount.cnt} photos in memory`);
+  console.log(`[CLEAR] ✅ Cleared ${beforeCount.cnt} photos and ${beforeFolders.cnt} folders`);
 
+  return c.json({
+    success: true,
+    message: "Database cleared",
+    photosCleared: beforeCount.cnt,
+    foldersCleared: beforeFolders.cnt,
+  });
+});
+
+// POST /api/photos/clear-errors — clear only photos with error status
+photosRouter.post('/photos/clear-errors', (c) => {
+  const db = getDb();
+  const errors = db.prepare("SELECT COUNT(*) as cnt FROM photos WHERE status = 'error'").get() as { cnt: number };
+  const result = db.prepare("DELETE FROM photos WHERE status = 'error'").run();
   saveDb();
-  console.log('[CLEAR] saveDb() called');
+  console.log(`[CLEAR] Cleared ${result.changes} error photos`);
+  return c.json({ success: true, cleared: result.changes, totalErrors: errors.cnt });
+});
 
-  // Verify disk
-  const { statSync } = await import('fs');
-  const { join } = await import('path');
-  const dbFile = join(process.cwd(), 'data', 'photo-index.db');
-  const diskSize = statSync(dbFile).size;
-  console.log(`[CLEAR] Disk file size: ${diskSize} bytes`);
-
-  return c.json({ success: true, message: "V2 - photos cleared", photosBefore: beforeCount.cnt, photosAfter: afterCount.cnt, diskSize });
+// POST /api/photos/reset-all — reset all done/error photos to pending (keeps folders)
+photosRouter.post('/photos/reset-all', (c) => {
+  const db = getDb();
+  const done = db.prepare("SELECT COUNT(*) as cnt FROM photos WHERE status = 'done'").get() as { cnt: number };
+  const errors = db.prepare("SELECT COUNT(*) as cnt FROM photos WHERE status = 'error'").get() as { cnt: number };
+  const result = db.prepare("UPDATE photos SET status = 'pending', error_message = NULL, updated_at = unixepoch('now') WHERE status IN ('done', 'error')").run();
+  saveDb();
+  console.log(`[RESET] Reset ${result.changes} photos to pending (done: ${done.cnt}, errors: ${errors.cnt})`);
+  return c.json({ success: true, reset: result.changes, doneCount: done.cnt, errorCount: errors.cnt });
 });
 
 // POST /api/photos/sync-exif
@@ -650,4 +693,71 @@ photosRouter.post('/ollama/health', async (c) => {
       error: error instanceof Error ? error.message : 'Unknown error'
     });
   }
+});
+
+// POST /api/db/backup — create a manual backup of the current database
+photosRouter.post('/db/backup', (c) => {
+  try {
+    const { copyFileSync, existsSync, statSync } = require('fs');
+    const { join, dirname } = require('path');
+    const { fileURLToPath } = require('url');
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    const dbFile = join(__dirname, '../data', 'photo-index.db');
+    const backupFile = dbFile + '.bak';
+
+    if (existsSync(dbFile)) {
+      if (existsSync(backupFile)) {
+        unlinkSync(backupFile);
+      }
+      copyFileSync(dbFile, backupFile);
+      const stats = statSync(backupFile);
+      console.log(`[BACKUP] 💾 Manual backup created: ${backupFile} (${stats.size} bytes)`);
+      return c.json({
+        success: true,
+        message: 'Backup created',
+        sizeBytes: stats.size,
+        sizeMB: (stats.size / (1024 * 1024)).toFixed(2),
+        createdAt: new Date(stats.mtimeMs).toLocaleString(),
+      });
+    } else {
+      return c.json({ success: false, error: 'Database file not found' }, 404);
+    }
+  } catch (e) {
+    console.error('[BACKUP] ❌ Failed:', e);
+    return c.json({ success: false, error: String(e) }, 500);
+  }
+});
+
+// GET /api/db/backup-info — get information about the current backup file
+photosRouter.get('/db/backup-info', (c) => {
+  const info = getBackupInfo();
+  return c.json(info);
+});
+
+// POST /api/db/restore — restore database from backup
+photosRouter.post('/db/restore', async (c) => {
+  if (isNuking()) {
+    return c.json({ success: false, error: 'Operation blocked — database is being cleared' }, 503);
+  }
+
+  console.log('[RESTORE] Starting database restore from backup...');
+
+  try {
+    await resetWatchers();
+  } catch (e) {
+    console.warn('[RESTORE] resetWatchers:', e);
+  }
+
+  const result = restoreDb();
+
+  if (result.success) {
+    try {
+      startAllWatchers();
+      startPeriodicScans();
+    } catch (e) {
+      console.warn('[RESTORE] Failed to restart watchers:', e);
+    }
+  }
+
+  return c.json(result);
 });

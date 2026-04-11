@@ -31,8 +31,6 @@ let isRunning = false;
 let stopRequested = false;
 let autoRestartEnabled = false;
 let autoRestartTimeout: ReturnType<typeof setTimeout> | null = null;
-let _photosSinceLastSave = 0;
-const SAVE_INTERVAL = 10; // Batch DB writes: save every N photos instead of after each one
 
 /** Check if the processor is currently running (for watcher to skip scans). */
 export function isProcessorRunning(): boolean {
@@ -123,22 +121,18 @@ export async function startProcessing(): Promise<{ success: true; total: number 
   console.log(`[PROCESSOR] Processing ${pendingCount} pending photos with ${MAX_WORKERS} workers...`);
 
   // Spawn workers (fire and forget)
-  const workers: Promise<void>[] = [];
+  const workers: Promise<{ errors: number }>[] = [];
   for (let i = 0; i < MAX_WORKERS; i++) {
     workers.push(runWorker());
   }
 
   // Wait for all workers to complete
-  Promise.all(workers).then(() => {
+  Promise.all(workers).then((results) => {
     isRunning = false;
     setState({ status: 'idle' });
+    const totalErrors = results.reduce((sum, r) => sum + r.errors, 0);
     const s = getState();
-    console.log(`[PROCESSOR] ✅ All processing complete! Indexed ${s.done} photos.`);
-    if (autoRestartEnabled) checkAndAutoRestart();
-  }).catch(err => {
-    console.error('[PROCESSOR] Worker error:', err);
-    isRunning = false;
-    setState({ status: 'idle' });
+    console.log(`[PROCESSOR] ✅ All processing complete! Indexed ${s.done - totalErrors} photos, ${totalErrors} errors.`);
     if (autoRestartEnabled) checkAndAutoRestart();
   });
 
@@ -196,8 +190,10 @@ export function getProgress(): ProcessingStatus {
  */
 export function backupDb(): void {
   const { copyFileSync } = require('fs');
-  const { join } = require('path');
-  const dbPath = join(process.cwd(), 'data', 'photo-index.db');
+  const { join, dirname } = require('path');
+  const { fileURLToPath } = require('url');
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const dbPath = join(__dirname, '../data', 'photo-index.db');
   const backupPath = dbPath + '.bak';
   try {
     copyFileSync(dbPath, backupPath);
@@ -277,7 +273,8 @@ function checkAndAutoRestart(): void {
 
 // ─── Internal: Worker Loop ─────────────────────────────────────────────────────
 
-async function runWorker(): Promise<void> {
+async function runWorker(): Promise<{ errors: number }> {
+  let errors = 0;
   while (!stopRequested) {
     const photo = pickNextPhoto();
     if (!photo) {
@@ -290,10 +287,12 @@ async function runWorker(): Promise<void> {
     } catch (err) {
       console.error(`[PROCESSOR] Error processing ${photo.name}:`, err);
       markPhotoError(photo.id, err instanceof Error ? err.message : 'Unknown error');
+      errors++;
     } finally {
       activeWorkers--;
     }
   }
+  return { errors };
 }
 
 function pickNextPhoto(): PhotoRow | null {
@@ -502,12 +501,7 @@ function markPhotoDone(photoId: string, tags: string[], thumbnail: string | null
     WHERE id = @id
   `).run({ tags: tagsJson, thumbnail, now, id: photoId });
 
-  // Batch DB writes: only flush to disk every SAVE_INTERVAL photos
-  _photosSinceLastSave++;
-  if (_photosSinceLastSave >= SAVE_INTERVAL) {
-    saveDb();
-    _photosSinceLastSave = 0;
-  }
+  saveDb();
 
   // Write EXIF tags to file
   const photo = db.prepare('SELECT * FROM photos WHERE id = @id').get({ id: photoId }) as PhotoRow | undefined;

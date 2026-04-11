@@ -29,7 +29,16 @@ import {
   getSystemInfo,
   syncExifTags,
   rewriteExifTags,
+  checkApiHealth,
+  getStats,
+  clearErrors,
+  resetAllPhotosStatus,
+  createBackup,
+  getBackupInfo,
+  restoreFromBackup,
+  BackupInfo,
   SystemInfo,
+  Stats,
   Photo as StoredPhoto,
   startProcessing,
   stopProcessing,
@@ -85,6 +94,8 @@ const App: React.FC = () => {
   
   // Data management
   const [showDataModal, setShowDataModal] = useState(false);
+  const [dbStats, setDbStats] = useState<Stats | null>(null);
+  const [backupInfo, setBackupInfo] = useState<BackupInfo | null>(null);
   
   // Link folder input ref
   const linkFolderInputRef = useRef<HTMLInputElement>(null);
@@ -153,17 +164,15 @@ const App: React.FC = () => {
         await refreshFolders();
 
         // ─── Load photos from backend DB ──────────────────────────────────────
-        // Only load first 100 to avoid freezing the browser with 10k+ photos.
+        // Only load first page to avoid freezing the browser with 10k+ photos.
         // The backend still indexes ALL photos; frontend just shows a sample.
-        const savedPhotos = await getAllPhotos();
-        const displayLimit = 100;
-        const totalCount = savedPhotos.length;
+        const savedPhotosPage = await getPhotosPage(100, 0);
+        const totalCount = savedPhotosPage.total;
 
         if (totalCount > 0) {
-          const samplePhotos = savedPhotos.slice(0, displayLimit);
-          console.log(`📚 Loaded ${totalCount} photos from DB (showing first ${samplePhotos.length})`);
+          console.log(`📚 Loaded ${savedPhotosPage.photos.length} photos from DB (total: ${totalCount})`);
 
-          const loadedPhotos: Photo[] = samplePhotos.map(sp => {
+          const loadedPhotos: Photo[] = savedPhotosPage.photos.map(sp => {
             const thumb = sp.thumbnail || '';
             return {
               id: sp.id,
@@ -275,14 +284,28 @@ const App: React.FC = () => {
   useEffect(() => {
     const pollStatus = async () => {
       try {
+        const isHealthy = await checkApiHealth();
+        if (!isHealthy) {
+          if (connectionStatus !== 'error') {
+            setConnectionStatus('error');
+            setConnectionError('Backend server is not responding');
+          }
+          return;
+        }
+
+        // Backend is up — ensure connection status reflects this if it was unknown
+        if (connectionStatus === 'unknown') {
+          setConnectionStatus('connected');
+        }
+
         const status = await getProcessingStatus();
         setProcessingStatus(status);
 
         // Refresh photos list when backend finishes processing
         if (status.status === 'idle' && status.done > 0 && photos.some(p => p.status === 'pending')) {
           console.log('🔄 Backend finished — refreshing photos list...');
-          const savedPhotos = await getAllPhotos();
-          const loadedPhotos = savedPhotos.map(sp => ({
+          const savedPhotos = await getPhotosPage(200, 0);
+          const loadedPhotos = savedPhotos.photos.map(sp => ({
             id: sp.id,
             file: new File([], sp.name),
             previewUrl: sp.thumbnail || '',
@@ -299,7 +322,10 @@ const App: React.FC = () => {
           refreshFolders();
         }
       } catch (err) {
-        // If the endpoint doesn't exist yet or server isn't ready, set a default idle state
+        if (connectionStatus !== 'error') {
+          setConnectionStatus('error');
+          setConnectionError('Failed to connect to backend server');
+        }
         if (!processingStatus) {
           setProcessingStatus({
             status: 'idle',
@@ -316,7 +342,7 @@ const App: React.FC = () => {
     pollStatus();
     const interval = setInterval(pollStatus, 2000);
     return () => clearInterval(interval);
-  }, []);
+  }, [connectionStatus]);
 
   const checkConnection = async () => {
     console.log(`🔄 Checking connection for provider: ${settings.provider}`);
@@ -540,7 +566,8 @@ const App: React.FC = () => {
     setScanProgress({ current: 0, total: 0, currentFile: 'Chargement depuis la base de données…' });
     let allDbPhotos: StoredPhoto[] = [];
     try {
-      allDbPhotos = await getAllPhotos();
+      const photosPage = await getPhotosPage(500, 0);
+      allDbPhotos = photosPage.photos;
     } catch (e) {
       console.warn('Could not load photos from DB:', e);
     }
@@ -795,16 +822,104 @@ const App: React.FC = () => {
         setIsLoading(true);
         setLoadingMessage('Suppression en cours…');
         await clearAllPhotos();
-        // Also clear the frontend File System Access handle so stale access
-        // doesn't trigger auto-rescan of the same folder after reload
         await clearDirectoryHandle();
-        // Server stays alive — nukeDb() wiped the DB in-place, no restart needed.
         window.location.reload();
       } catch (err) {
         setIsLoading(false);
         console.error('Clear failed:', err);
         alert(`Erreur lors de la suppression : ${err}`);
       }
+    }
+  };
+
+  const loadDbStats = useCallback(async () => {
+    try {
+      const stats = await getStats();
+      setDbStats(stats);
+    } catch (err) {
+      console.warn('Failed to load DB stats:', err);
+    }
+  }, []);
+
+  const handleClearErrors = async () => {
+    if (!confirm('Supprimer toutes les photos en erreur ?')) return;
+    try {
+      const result = await clearErrors();
+      alert(`✅ ${result.cleared} photos en erreur supprimées`);
+      await loadDbStats();
+      await loadBackupInfo();
+    } catch (err) {
+      alert(`Erreur : ${err}`);
+    }
+  };
+
+  const handleResetAll = async () => {
+    if (!confirm('Remettre toutes les photos (done/error) en pending ? Les tags seront conservés.')) return;
+    try {
+      const result = await resetAllPhotosStatus();
+      alert(`✅ ${result.reset} photos remises en pending`);
+      await loadDbStats();
+      await loadBackupInfo();
+    } catch (err) {
+      alert(`Erreur : ${err}`);
+    }
+  };
+
+  const loadBackupInfo = useCallback(async () => {
+    try {
+      const info = await getBackupInfo();
+      setBackupInfo(info);
+    } catch (err) {
+      console.warn('Failed to load backup info:', err);
+    }
+  }, []);
+
+  // ── Load DB stats + backup info when Data Modal opens ─────────────────────
+  useEffect(() => {
+    if (showDataModal) {
+      loadDbStats();
+      loadBackupInfo();
+    }
+  }, [showDataModal, loadDbStats, loadBackupInfo]);
+
+  const handleCreateBackup = async () => {
+    try {
+      const result = await createBackup();
+      if (result.success) {
+        alert(`✅ Backup créé (${result.sizeMB} MB)`);
+        await loadBackupInfo();
+        await loadDbStats();
+      } else {
+        alert(`❌ Backup échoué: ${result.error}`);
+      }
+    } catch (err) {
+      alert(`Erreur : ${err}`);
+    }
+  };
+
+  const handleRestoreBackup = async () => {
+    if (!backupInfo?.exists) {
+      alert('Aucun backup disponible');
+      return;
+    }
+    if (!confirm(`Restaurer la base de données depuis le backup du ${backupInfo.createdAt} ?\n\n⚠️ L'état actuel sera remplacé.`)) {
+      return;
+    }
+    try {
+      setIsLoading(true);
+      setLoadingMessage('Restauration en cours…');
+      const result = await restoreFromBackup();
+      if (result.success) {
+        alert(`✅ Restauré ${result.photosRestored} photos et ${result.foldersRestored} dossiers`);
+        window.location.reload();
+      } else {
+        alert(`❌ Restauration échouée: ${result.error}`);
+      }
+    } catch (err) {
+      alert(`Erreur : ${err}`);
+    } finally {
+      setIsLoading(false);
+      setLoadingMessage('');
     }
   };
 
@@ -827,10 +942,10 @@ const App: React.FC = () => {
       ].filter(Boolean).join('\n');
       alert(msg);
       // Reload photos to reflect injected tags
-      const savedPhotos = await getAllPhotos();
-      if (savedPhotos.length > 0) {
+      const savedPhotosPage = await getPhotosPage(100, 0);
+      if (savedPhotosPage.photos.length > 0) {
         setPhotos(prev => prev.map(p => {
-          const updated = savedPhotos.find(s => s.id === p.id);
+          const updated = savedPhotosPage.photos.find(s => s.id === p.id);
           return updated ? { ...p, tags: updated.tags, status: updated.status as Photo['status'] } : p;
         }));
       }
@@ -1640,8 +1755,8 @@ const App: React.FC = () => {
 
         {/* Data Management Modal */}
         {showDataModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-            <div className="bg-zinc-900 rounded-xl border border-zinc-700 w-full max-w-md overflow-hidden shadow-2xl">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => {}}>
+            <div className="bg-zinc-900 rounded-xl border border-zinc-700 w-full max-w-md overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
               <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-800/50">
                 <h3 className="font-semibold text-white">Data Management</h3>
                 <button onClick={() => setShowDataModal(false)} className="text-zinc-400 hover:text-white">
@@ -1650,98 +1765,209 @@ const App: React.FC = () => {
               </div>
               
               <div className="p-6 space-y-4">
-                <p className="text-sm text-zinc-400">
-                  Your photo index data is stored locally in your browser. Use these options to backup or manage your data.
-                </p>
-                
-                <div className="space-y-3">
-                  {/* Retry Uncategorized Button */}
-                  {photos.filter(p => p.tags.length === 1 && p.tags[0] === 'Uncategorized').length > 0 && (
-                    <button
-                      onClick={() => { setShowDataModal(false); handleRetryUncategorized(); }}
-                      disabled={isScanning || (processingStatus?.status === 'running')}
-                      className="w-full px-4 py-3 bg-orange-600 hover:bg-orange-500 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
-                      Retry Uncategorized ({photos.filter(p => p.tags.length === 1 && p.tags[0] === 'Uncategorized').length})
-                    </button>
-                  )}
-
-                  {/* ── EXIF Sync section ──────────────────────────────── */}
+                {/* ── Database Stats Panel ─────────────────────────────── */}
+                {dbStats ? (
                   <div className="border border-zinc-700 rounded-lg overflow-hidden">
-                    <div className="bg-zinc-800/60 px-4 py-2 text-xs font-medium text-zinc-400 uppercase tracking-wide">
-                      Métadonnées EXIF / XMP
-                    </div>
-                    <div className="p-3 space-y-2">
-                      <button
-                        onClick={handleSyncExif}
-                        disabled={photos.length === 0}
-                        className="w-full px-4 py-2.5 bg-blue-700 hover:bg-blue-600 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
-                        <span>
-                          Synchroniser les tags EXIF
-                          {selectedFolder && <span className="ml-1 opacity-70 text-xs">(dossier sélectionné)</span>}
+                    <div className="bg-zinc-800/60 px-4 py-2 flex justify-between items-center">
+                      <div className="text-xs font-medium text-zinc-400 uppercase tracking-wide flex items-center gap-2">
+                        Base de données
+                        <span className={`inline-block w-2 h-2 rounded-full ${
+                          dbStats.db.health === 'ok' ? 'bg-green-500' :
+                          dbStats.db.health === 'warning' ? 'bg-yellow-500' : 'bg-red-500'
+                        }`}></span>
+                        <span className="text-zinc-500 normal-case font-normal">
+                          {dbStats.db.health === 'ok' ? 'OK' : dbStats.db.health === 'warning' ? 'Warning' : 'Critical'}
                         </span>
-                      </button>
-                      <p className="text-[10px] text-zinc-500 px-1">
-                        Lit les tags depuis les fichiers → injecte en DB ; et écrit les tags DB → fichiers manquants.
-                      </p>
+                      </div>
                       <button
-                        onClick={handleRewriteExif}
-                        disabled={photos.filter(p => p.status === 'done' && p.tags.length > 0).length === 0}
-                        className="w-full px-4 py-2.5 bg-zinc-700 hover:bg-zinc-600 disabled:bg-zinc-800 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3"
+                        onClick={loadDbStats}
+                        className="text-zinc-500 hover:text-white text-xs flex items-center gap-1"
+                        title="Reload stats"
                       >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
-                        Réécrire tous les tags EXIF ({photos.filter(p => p.status === 'done' && p.tags.length > 0).length} photos)
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+                        Refresh
                       </button>
-                      <p className="text-[10px] text-zinc-500 px-1">
-                        Force la réécriture des métadonnées EXIF/IPTC/XMP pour toutes les photos indexées.
-                      </p>
+                    </div>
+                    <div className="p-3 space-y-2 text-sm">
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                        <div className="text-zinc-400">Total photos:</div>
+                        <div className="text-white font-medium">{dbStats.totalPhotos.toLocaleString()}</div>
+                        <div className="text-zinc-400">Indexées:</div>
+                        <div className="text-green-400 font-medium">{dbStats.indexedPhotos.toLocaleString()}</div>
+                        <div className="text-zinc-400">En attente:</div>
+                        <div className="text-yellow-400 font-medium">{dbStats.pendingPhotos.toLocaleString()}</div>
+                        <div className="text-zinc-400">Erreurs:</div>
+                        <div className="text-red-400 font-medium">{dbStats.errorPhotos.toLocaleString()}</div>
+                        {dbStats.processingPhotos > 0 && (
+                          <>
+                            <div className="text-zinc-400">En cours:</div>
+                            <div className="text-blue-400 font-medium">{dbStats.processingPhotos.toLocaleString()}</div>
+                          </>
+                        )}
+                        <div className="text-zinc-400">Tags uniques:</div>
+                        <div className="text-white">{dbStats.uniqueTags.toLocaleString()}</div>
+                        <div className="text-zinc-400">Dossiers:</div>
+                        <div className="text-white">{dbStats.folders.length}</div>
+                      </div>
+                      <div className="border-t border-zinc-700/50 pt-2 mt-2 space-y-1">
+                        <div className="flex justify-between text-xs">
+                          <span className="text-zinc-500">Fichier DB:</span>
+                          <span className="text-zinc-300">{dbStats.db.fileSizeMB} MB</span>
+                        </div>
+                        <div className="flex justify-between text-xs">
+                          <span className="text-zinc-500">Taille moyenne/photo:</span>
+                          <span className="text-zinc-300">~{(dbStats.db.avgPhotoSizeBytes / 1024).toFixed(0)} KB</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                  
+                ) : (
+                  <div className="flex items-center justify-center py-4">
+                    <button onClick={loadDbStats} className="text-zinc-400 hover:text-white text-sm flex items-center gap-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+                      Charger les stats DB
+                    </button>
+                  </div>
+                )}
+
+                {/* ── Quick Actions ─────────────────────────────────────── */}
+                <div className="flex gap-2">
                   <button
-                    onClick={handleExportCSV}
-                    className="w-full px-4 py-3 bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3"
+                    onClick={handleClearErrors}
+                    disabled={!dbStats || dbStats.errorPhotos === 0}
+                    className="flex-1 px-3 py-2 bg-orange-900/30 hover:bg-orange-900/50 disabled:bg-zinc-800 disabled:text-zinc-600 text-orange-300 text-xs font-medium rounded-lg transition-colors border border-orange-800/50"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><path d="M8 13h2"/><path d="M8 17h2"/><path d="M14 13h2"/><path d="M14 17h2"/></svg>
-                    Export for Excel (CSV)
+                    Clear Errors ({dbStats?.errorPhotos || 0})
                   </button>
-                  
                   <button
-                    onClick={handleExportData}
-                    className="w-full px-4 py-3 bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3"
+                    onClick={handleResetAll}
+                    disabled={!dbStats || (dbStats.indexedPhotos === 0 && dbStats.errorPhotos === 0)}
+                    className="flex-1 px-3 py-2 bg-yellow-900/30 hover:bg-yellow-900/50 disabled:bg-zinc-800 disabled:text-zinc-600 text-yellow-300 text-xs font-medium rounded-lg transition-colors border border-yellow-800/50"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
-                    Export Backup (JSON)
+                    Reset to Pending
                   </button>
-                  
-                  <label className="w-full px-4 py-3 bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3 cursor-pointer">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
-                    Import Backup
-                    <input 
-                      type="file" 
-                      accept=".json"
-                      className="hidden" 
-                      onChange={handleImportData} 
-                    />
-                  </label>
-                  
-                  <button
-                    onClick={handleClearData}
-                    className="w-full px-4 py-3 bg-red-900/30 hover:bg-red-900/50 text-red-300 text-sm font-medium rounded-lg transition-colors flex items-center gap-3 border border-red-800/50"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-                    Clear All Data
-                  </button>
+                </div>
+
+                {/* ── Backup / Restore ─────────────────────────────────── */}
+                <div className="border border-zinc-700 rounded-lg overflow-hidden">
+                  <div className="bg-zinc-800/60 px-4 py-2 text-xs font-medium text-zinc-400 uppercase tracking-wide">
+                    Backup &amp; Restore
+                  </div>
+                  <div className="p-3 space-y-2">
+                    <div className="flex justify-between items-center text-xs mb-2">
+                      <span className="text-zinc-500">Backup:</span>
+                      {backupInfo?.exists ? (
+                        <span className="text-green-400">
+                          ✓ {backupInfo.sizeMB} MB — {backupInfo.createdAt}
+                        </span>
+                      ) : (
+                        <span className="text-zinc-500">Aucun</span>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleCreateBackup}
+                        disabled={!dbStats || dbStats.totalPhotos === 0}
+                        className="flex-1 px-3 py-2 bg-blue-900/30 hover:bg-blue-900/50 disabled:bg-zinc-800 disabled:text-zinc-600 text-blue-300 text-xs font-medium rounded-lg transition-colors border border-blue-800/50"
+                        title="Créer un backup de la DB"
+                      >
+                        💾 Sauvegarder
+                      </button>
+                      <button
+                        onClick={handleRestoreBackup}
+                        disabled={!backupInfo?.exists}
+                        className="flex-1 px-3 py-2 bg-purple-900/30 hover:bg-purple-900/50 disabled:bg-zinc-800 disabled:text-zinc-600 text-purple-300 text-xs font-medium rounded-lg transition-colors border border-purple-800/50"
+                        title="Restaurer depuis le backup"
+                      >
+                        ♻️ Restaurer
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-zinc-500">
+                      Le backup remplace le précédent. Utilisé avant "Clear All" ou "Reset All".
+                    </p>
+                  </div>
                 </div>
                 
-                <div className="pt-4 border-t border-zinc-800">
-                  <p className="text-xs text-zinc-500">
-                    Photos: {photos.length} • Indexed: {processedCount} • Tags: {categories.length}
-                  </p>
+                {/* ── EXIF Sync section ──────────────────────────────── */}
+                <div className="border border-zinc-700 rounded-lg overflow-hidden">
+                  <div className="bg-zinc-800/60 px-4 py-2 text-xs font-medium text-zinc-400 uppercase tracking-wide">
+                    Métadonnées EXIF / XMP
+                  </div>
+                  <div className="p-3 space-y-2">
+                    <button
+                      onClick={handleSyncExif}
+                      disabled={photos.length === 0}
+                      className="w-full px-4 py-2.5 bg-blue-700 hover:bg-blue-600 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+                      <span>
+                        Synchroniser les tags EXIF
+                        {selectedFolder && <span className="ml-1 opacity-70 text-xs">(dossier sélectionné)</span>}
+                      </span>
+                    </button>
+                    <p className="text-[10px] text-zinc-500 px-1">
+                      Lit les tags depuis les fichiers → injecte en DB ; et écrit les tags DB → fichiers manquants.
+                    </p>
+                    <button
+                      onClick={handleRewriteExif}
+                      disabled={photos.filter(p => p.status === 'done' && p.tags.length > 0).length === 0}
+                      className="w-full px-4 py-2.5 bg-zinc-700 hover:bg-zinc-600 disabled:bg-zinc-800 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+                      Réécrire tous les tags EXIF ({photos.filter(p => p.status === 'done' && p.tags.length > 0).length} photos)
+                    </button>
+                    <p className="text-[10px] text-zinc-500 px-1">
+                      Force la réécriture des métadonnées EXIF/IPTC/XMP pour toutes les photos indexées.
+                    </p>
+                  </div>
                 </div>
+
+                {/* Retry Uncategorized Button */}
+                {photos.filter(p => p.tags.length === 1 && p.tags[0] === 'Uncategorized').length > 0 && (
+                  <button
+                    onClick={() => { setShowDataModal(false); handleRetryUncategorized(); }}
+                    disabled={isScanning || (processingStatus?.status === 'running')}
+                    className="w-full px-4 py-3 bg-orange-600 hover:bg-orange-500 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+                    Retry Uncategorized ({photos.filter(p => p.tags.length === 1 && p.tags[0] === 'Uncategorized').length})
+                  </button>
+                )}
+                  
+                <button
+                  onClick={handleExportCSV}
+                  className="w-full px-4 py-3 bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><path d="M8 13h2"/><path d="M8 17h2"/><path d="M14 13h2"/><path d="M14 17h2"/></svg>
+                  Export for Excel (CSV)
+                </button>
+                
+                <button
+                  onClick={handleExportData}
+                  className="w-full px-4 py-3 bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                  Export Backup (JSON)
+                </button>
+                
+                <label className="w-full px-4 py-3 bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-3 cursor-pointer">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                  Import Backup
+                  <input 
+                    type="file" 
+                    accept=".json"
+                    className="hidden" 
+                    onChange={handleImportData} 
+                  />
+                </label>
+                
+                <button
+                  onClick={handleClearData}
+                  className="w-full px-4 py-3 bg-red-900/30 hover:bg-red-900/50 text-red-300 text-sm font-medium rounded-lg transition-colors flex items-center gap-3 border border-red-800/50"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                  Clear All Data
+                </button>
               </div>
             </div>
           </div>
