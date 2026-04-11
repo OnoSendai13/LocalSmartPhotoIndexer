@@ -15,6 +15,7 @@ const RAW_EXTENSIONS = new Set([
   '.cr2', '.cr3', '.dng', '.nef', '.nrw', '.arw', '.srf', '.orf',
   '.rw2', '.raf', '.raw', '.rwl', '.pef', '.srw', '.x3f', '.3fr',
   '.iiq', '.erf', '.kdc', '.dcr', '.tif', '.tiff', '.psd', '.psb',
+  '.heic', '.heif',  // HEIC support is unstable on Windows in sharp
 ]);
 
 /**
