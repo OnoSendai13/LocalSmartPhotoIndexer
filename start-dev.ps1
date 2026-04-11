@@ -3,7 +3,7 @@ $env:FORCE_PORT = "true"
 
 $backendScript = @"
 Set-Location 'G:\Github perso\LocalSmartPhotoIndexer\server'
-npm run dev
+npm start
 "@
 
 $frontendScript = @"
