@@ -9,6 +9,17 @@ import { analyzeImageWithGemini, checkGeminiConnection, GEMINI_MODELS } from './
 
 const API_BASE = '/api';
 
+// File System Access API type declarations
+declare global {
+  interface Window {
+    showDirectoryPicker?: (options?: { mode?: 'read' | 'readwrite' }) => Promise<FileSystemDirectoryHandle>;
+  }
+  interface FileSystemDirectoryHandle {
+    values(): AsyncIterableIterator<FileSystemHandle>;
+    getDirectoryHandle(name: string): Promise<FileSystemDirectoryHandle>;
+  }
+}
+
 import {
   savePhoto,
   savePhotos,
@@ -118,7 +129,10 @@ const App: React.FC = () => {
     open: boolean;
     folderName: string;
     pendingFiles: FileList | null;
-  }>({ open: false, folderName: '', pendingFiles: null });
+    directoryHandle: FileSystemDirectoryHandle | null;
+    totalFiles: number;
+    enumeratedFiles: number;
+  }>({ open: false, folderName: '', pendingFiles: null, directoryHandle: null, totalFiles: 0, enumeratedFiles: 0 });
 
   // Refresh folders from backend
   const refreshFolders = useCallback(async () => {
@@ -301,9 +315,14 @@ const App: React.FC = () => {
         const status = await getProcessingStatus();
         setProcessingStatus(status);
 
+        // Debug: log processing status
+        if (status.status !== 'idle' || status.done > 0) {
+          console.log('📊 Processing status:', { status: status.status, done: status.done, total: status.total, pendingInState: photos.filter(p => p.status === 'pending').length });
+        }
+
         // Refresh photos list when backend finishes processing
         if (status.status === 'idle' && status.done > 0 && photos.some(p => p.status === 'pending')) {
-          console.log('🔄 Backend finished — refreshing photos list...');
+          console.log('🔄 Backend finished — refreshing photos list...', { done: status.done, pendingInState: photos.filter(p => p.status === 'pending').length });
           const savedPhotos = await getPhotosPage(200, 0);
           const loadedPhotos = savedPhotos.photos.map(sp => ({
             id: sp.id,
@@ -472,20 +491,106 @@ const App: React.FC = () => {
   useEffect(() => { photosRef.current = photos; }, [photos]);
 
   /**
-   * Step 1 — called when the user picks a folder via the native file picker.
-   * Validates the selection, checks the AI connection, then opens FolderPathModal
-   * to ask for the absolute server-side path before proceeding.
+   * Step 1 — called when user clicks "Add Folder" button.
+   * Uses showDirectoryPicker() which is non-blocking (doesn't enumerate files).
+   * Opens the modal immediately with just the folder name.
+   */
+  const handleAddFolderClick = async () => {
+    try {
+      // Auto-retry connection if it was previously failed
+      if (connectionStatus !== 'connected') {
+        const isNowConnected = await checkConnection();
+        if (!isNowConnected) {
+          const providerName = settings.provider === 'ollama' ? 'Ollama' : 
+                              settings.provider === 'openrouter' ? 'OpenRouter' : 'Gemini';
+          alert(`Connection Failed: Please check your ${providerName} configuration in settings.`);
+          setShowSettings(true);
+          return;
+        }
+      }
+
+      // Use showDirectoryPicker - this is async but doesn't enumerate files yet
+      const handle = await window.showDirectoryPicker();
+      console.log('📁 Folder selected:', handle.name);
+
+      // Open modal immediately with just the folder name - no files yet
+      setFolderPathModalState({
+        open: true,
+        folderName: handle.name,
+        pendingFiles: null,
+        directoryHandle: handle,
+        totalFiles: 0,
+        enumeratedFiles: 0,
+      });
+      console.log('✅ Modal opened for folder:', handle.name);
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        console.error('❌ Failed to select folder:', err);
+      }
+    }
+  };
+
+  /**
+   * Enumerates all image files from a directory handle.
+   * Shows progress during enumeration.
+   */
+  const enumerateFilesFromHandle = async (
+    dirHandle: FileSystemDirectoryHandle,
+    onProgress: (current: number, total: number) => void
+  ): Promise<FileList | null> => {
+    const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']);
+    const RAW_EXTS = new Set(['.cr2','.cr3','.nef','.nrw','.arw','.srf','.orf','.rw2',
+      '.raf','.dng','.raw','.rwl','.pef','.srw','.x3f','.3fr','.iiq','.erf','.kdc',
+      '.dcr','.tif','.tiff','.psd','.psb']);
+    const ALL_EXTS = new Set([...IMAGE_EXTS, ...RAW_EXTS]);
+
+    const allFiles: File[] = [];
+
+    async function processDirectory(dirHandle: FileSystemDirectoryHandle): Promise<void> {
+      for await (const entry of (dirHandle as any).values()) {
+        if (entry.kind === 'file') {
+          const ext = entry.name.toLowerCase().match(/\.[^.]+$/)?.[0];
+          if (ext && ALL_EXTS.has(ext)) {
+            const file = await entry.getFile();
+            allFiles.push(file);
+            if (allFiles.length % 100 === 0) {
+              onProgress(allFiles.length, -1);
+            }
+          }
+        } else if (entry.kind === 'directory') {
+          const subDir = await dirHandle.getDirectoryHandle(entry.name);
+          await processDirectory(subDir);
+        }
+      }
+    }
+
+    try {
+      await processDirectory(dirHandle);
+
+      // Convert to FileList-like object
+      const dataTransfer = new DataTransfer();
+      allFiles.forEach(f => dataTransfer.items.add(f));
+      console.log(`📁 Enumerated ${allFiles.length} files from directory`);
+      onProgress(allFiles.length, allFiles.length);
+      return dataTransfer.files;
+    } catch (err) {
+      console.error('❌ Error enumerating files:', err);
+      return null;
+    }
+  };
+
+  /**
+   * Step 1 (legacy) — called when user picks a folder via the old webkitdirectory input.
    */
   const handleFolderSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
-    console.log('📁 Folder selected, files:', files?.length);
+    console.log('📁 handleFolderSelect called, files:', files?.length);
     
     if (!files || files.length === 0) {
       console.log('❌ No files found');
       return;
     }
 
-    // Auto-retry connection if it was previously failed
     if (connectionStatus !== 'connected') {
       const isNowConnected = await checkConnection();
       if (!isNowConnected) {
@@ -498,16 +603,19 @@ const App: React.FC = () => {
       }
     }
 
-    // Determine folder name from the first file's relative path
     const firstFile = files[0];
     const relativeFolderName = firstFile.webkitRelativePath?.split('/')[0] || 'Imported';
 
-    // Open the modal — the modal queries the backend for real paths
+    console.log('📁 Setting modal state, folderName:', relativeFolderName, 'files count:', files.length);
     setFolderPathModalState({
       open: true,
       folderName: relativeFolderName,
       pendingFiles: files,
+      directoryHandle: null,
+      totalFiles: files.length,
+      enumeratedFiles: files.length,
     });
+    console.log('✅ Modal state set');
   };
 
   /**
@@ -531,15 +639,52 @@ const App: React.FC = () => {
    *   - A small "path debug" report is shown so the user can fix the path
    */
   const handleFolderPathConfirm = async (absoluteFolderPath: string | null) => {
-    const { pendingFiles } = folderPathModalState;
-    setFolderPathModalState(s => ({ ...s, open: false }));
+    console.log('🔔 handleFolderPathConfirm called, path:', absoluteFolderPath);
+    const { pendingFiles, directoryHandle } = folderPathModalState;
 
-    if (!absoluteFolderPath || !pendingFiles) {
+    // If cancelled
+    if (!absoluteFolderPath) {
+      setFolderPathModalState(s => ({ ...s, open: false }));
+      console.log('❌ Cancelled');
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
 
+    // Files to process - either from enumeration or from pendingFiles
+    let filesToProcess: FileList | null = pendingFiles;
+
+    // If we have a directory handle (new showDirectoryPicker flow), enumerate files first
+    if (directoryHandle && !pendingFiles) {
+      console.log('📁 Enumerating files from directory handle...');
+      setFolderPathModalState(s => ({ ...s, open: false }));
+      setScanProgress({ current: 0, total: 0, currentFile: 'Exploration du dossier…' });
+
+      filesToProcess = await enumerateFilesFromHandle(directoryHandle, (current, total) => {
+        setScanProgress({
+          current: current,
+          total: total > 0 ? total : current,
+          currentFile: `Lecture des fichiers: ${current}${total > 0 ? '/' + total : ''}…`
+        });
+      });
+
+      if (!filesToProcess || filesToProcess.length === 0) {
+        alert('Aucun fichier image trouvé dans ce dossier.');
+        setIsScanning(false);
+        return;
+      }
+      console.log(`✅ Enumerated ${filesToProcess.length} files`);
+    } else {
+      setFolderPathModalState(s => ({ ...s, open: false }));
+    }
+
+    if (!filesToProcess) {
+      console.log('❌ No files to process');
+      setIsScanning(false);
+      return;
+    }
+
     const cleanAbsolutePath = absoluteFolderPath.trim().replace(/[/\\]+$/, '');
+    console.log('📁 Starting folder registration, path:', cleanAbsolutePath, 'files:', filesToProcess.length);
 
     setIsScanning(true);
     setScanProgress({ current: 0, total: 0, currentFile: 'Enregistrement du dossier…' });
@@ -578,7 +723,7 @@ const App: React.FC = () => {
     // ── Step 3: build Photo[] ─────────────────────────────────────────────────
     // Map browser File objects by filename for quick lookup
     const filesByName = new Map<string, File>();
-    Array.from(pendingFiles).forEach(f => filesByName.set(f.name, f));
+    Array.from(filesToProcess).forEach(f => filesByName.set(f.name, f));
 
     const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']);
     const RAW_EXTS = new Set(['.cr2','.cr3','.nef','.nrw','.arw','.srf','.orf','.rw2',
@@ -629,7 +774,7 @@ const App: React.FC = () => {
       // Build set of already-done paths from DB
       const donePathsInDb = new Set(folderDbPhotos.filter(p => p.status === 'done').map(p => p.path));
 
-      const filesArray = Array.from(pendingFiles);
+      const filesArray = Array.from(filesToProcess);
       for (let i = 0; i < filesArray.length; i++) {
         const file = filesArray[i];
         setScanProgress({ current: i + 1, total: filesArray.length, currentFile: file.name });
@@ -1470,7 +1615,7 @@ const App: React.FC = () => {
         totalPhotos={photos.length}
         processedCount={processedCount}
         isProcessing={isScanning || (processingStatus?.status === 'running')}
-        onAddPhotos={() => fileInputRef.current?.click()}
+        onAddPhotos={handleAddFolderClick}
         onLinkFolder={handleLinkFolder}
         hasUnlinkedPhotos={hasUnlinkedPhotos}
         onRetryUncategorized={handleRetryUncategorized}
@@ -1526,23 +1671,14 @@ const App: React.FC = () => {
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
             </button>
             
-            {/* Add Folder Button - using label for native file picker behavior */}
-            <label className="inline-flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white text-sm font-medium rounded-lg cursor-pointer transition-colors shadow-lg shadow-orange-500/20">
+            {/* Add Folder Button - using showDirectoryPicker for non-blocking behavior */}
+            <button
+              onClick={handleAddFolderClick}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white text-sm font-medium rounded-lg cursor-pointer transition-colors shadow-lg shadow-orange-500/20"
+            >
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
               <span>Add Folder</span>
-              <input 
-                ref={fileInputRef}
-                type="file" 
-                webkitdirectory=""
-                directory=""
-                multiple 
-                style={{ position: 'absolute', width: '1px', height: '1px', padding: 0, margin: '-1px', overflow: 'hidden', clip: 'rect(0,0,0,0)', border: 0 }}
-                onChange={(e) => {
-                  console.log('📂 Input onChange triggered!');
-                  handleFolderSelect(e);
-                }} 
-              />
-            </label>
+            </button>
             
             {/* Hidden input for linking folder */}
             <input 
