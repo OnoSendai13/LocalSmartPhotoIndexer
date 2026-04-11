@@ -419,12 +419,24 @@ photosRouter.post('/photos/import', async (c) => {
 photosRouter.delete('/photos/all', async (c) => {
   console.log('[CLEAR] Nuclear clear starting...');
 
-  try { await resetWatchers(); console.log('[CLEAR] Watchers stopped.'); } catch (e) { console.warn('[CLEAR] resetWatchers:', e); }
+  try {
+    await resetWatchers();
+    console.log('[CLEAR] Watchers stopped.');
+  } catch (e) {
+    console.warn('[CLEAR] resetWatchers error:', e);
+  }
 
   const beforeCount = getDb().prepare('SELECT COUNT(*) as cnt FROM photos').get() as { cnt: number };
   const beforeFolders = getDb().prepare('SELECT COUNT(*) as cnt FROM folders').get() as { cnt: number };
+  console.log(`[CLEAR] Before: ${beforeCount.cnt} photos, ${beforeFolders.cnt} folders`);
 
-  nukeDb();
+  try {
+    nukeDb();
+    console.log('[CLEAR] ✅ nukeDb completed');
+  } catch (e) {
+    console.error('[CLEAR] ❌ nukeDb failed:', e);
+    return c.json({ success: false, error: String(e) }, 500);
+  }
 
   console.log(`[CLEAR] ✅ Cleared ${beforeCount.cnt} photos and ${beforeFolders.cnt} folders`);
 

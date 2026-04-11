@@ -965,8 +965,11 @@ const App: React.FC = () => {
       try {
         setIsLoading(true);
         setLoadingMessage('Suppression en cours…');
+        console.log('🗑️ Starting clear...');
         await clearAllPhotos();
+        console.log('🗑️ Clear API call done');
         await clearDirectoryHandle();
+        console.log('🗑️ Reloading page...');
         window.location.reload();
       } catch (err) {
         setIsLoading(false);
