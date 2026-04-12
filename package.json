@@ -10,6 +10,7 @@
     "server": "cd server && npm run dev",
     "build": "vite build",
     "preview": "vite preview",
+    "start": "vite build && cd server && npm run start",
     "migrate": "tsx scripts/migrate-indexeddb.ts"
   },
   "dependencies": {

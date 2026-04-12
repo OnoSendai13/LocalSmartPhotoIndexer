@@ -9,6 +9,9 @@ import { foldersRouter } from './routes/folders.js';
 import { settingsRouter } from './routes/settings.js';
 import { processorRouter } from './routes/processor.js';
 import { startAllWatchers, startPeriodicScans, stopAllWatchers } from './watcher.js';
+import { existsSync, readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
 /** Check if port is free, wait if needed (max 10s). */
 async function ensurePortFree(port: number): Promise<void> {
@@ -36,10 +39,11 @@ async function ensurePortFree(port: number): Promise<void> {
 }
 
 const app = new Hono();
+const PORT = parseInt(process.env.PORT || '6800', 10);
 
 // CORS
 app.use('/*', cors({
-  origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+  origin: ['http://localhost:5173', 'http://127.0.0.1:5173', `http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`],
   credentials: true,
   maxAge: 86400,
 }));
@@ -52,6 +56,52 @@ app.route('/api', processorRouter);
 
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok' }));
+
+// Serve built frontend from parent directory (npm run build output)
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const distPath = join(__dirname, '../../dist');
+if (existsSync(distPath)) {
+  // Serve static files from dist/
+  app.use('/*', async (c, next) => {
+    const path = c.req.path === '/' ? '/index.html' : c.req.path;
+    const filePath = join(distPath, path);
+    
+    // Try exact file first
+    if (existsSync(filePath)) {
+      const ext = filePath.split('.').pop()?.toLowerCase();
+      const mimeTypes: Record<string, string> = {
+        'html': 'text/html',
+        'js': 'application/javascript',
+        'css': 'text/css',
+        'json': 'application/json',
+        'png': 'image/png',
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'gif': 'image/gif',
+        'svg': 'image/svg+xml',
+        'ico': 'image/x-icon',
+        'woff': 'font/woff',
+        'woff2': 'font/woff2',
+      };
+      const contentType = ext ? (mimeTypes[ext] || 'application/octet-stream') : 'application/octet-stream';
+      c.header('Content-Type', contentType);
+      c.header('Cache-Control', 'public, max-age=31536000');
+      return c.body(readFileSync(filePath));
+    }
+    
+    // Fallback to index.html for SPA routing
+    const indexPath = join(distPath, 'index.html');
+    if (existsSync(indexPath)) {
+      c.header('Content-Type', 'text/html');
+      return c.body(readFileSync(indexPath));
+    }
+    
+    await next();
+  });
+  console.log(`[SERVER] Serving frontend from ${distPath}`);
+} else {
+  console.warn(`[SERVER] No dist folder found at ${distPath} — frontend not served. Run 'npm run build' first.`);
+}
 
 // Debug: read DB state from disk (independent of in-memory state)
 app.get('/api/debug/db', async (c) => {
@@ -82,8 +132,6 @@ app.get('/api/debug/db', async (c) => {
     return c.json({ error: String(e) }, 500);
   }
 });
-
-const PORT = parseInt(process.env.PORT || '6800', 10);
 
 // ─── Server start ─────────────────────────────────────────────────────────────
 
