@@ -1776,11 +1776,30 @@ const App: React.FC = () => {
                         onChange={(e) => updateSettings({ ollamaModel: e.target.value })}
                         className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-orange-500"
                       >
-                        {RECOMMENDED_MODELS.map(model => (
-                          <option key={model.id} value={model.id}>
-                            {model.name} ({model.vram}) {model.recommended ? '⭐' : ''}
-                          </option>
-                        ))}
+                        {installedModels.length > 0 ? (
+                          <>
+                            <optgroup label="Installed Models">
+                              {installedModels.map(model => (
+                                <option key={model} value={model}>
+                                  {model} ✓
+                                </option>
+                              ))}
+                            </optgroup>
+                            <optgroup label="Recommended">
+                              {RECOMMENDED_MODELS.map(model => (
+                                <option key={model.id} value={model.id}>
+                                  {model.name} ({model.vram})
+                                </option>
+                              ))}
+                            </optgroup>
+                          </>
+                        ) : (
+                          RECOMMENDED_MODELS.map(model => (
+                            <option key={model.id} value={model.id}>
+                              {model.name} ({model.vram}) {model.recommended ? '⭐' : ''}
+                            </option>
+                          ))
+                        )}
                       </select>
                       <p className="text-[10px] text-zinc-500 mt-1">
                         {RECOMMENDED_MODELS.find(m => m.id === settings.ollamaModel)?.description}
@@ -1793,8 +1812,7 @@ const App: React.FC = () => {
                       )}
                       {!installedModels.some(m => m.startsWith(settings.ollamaModel.split(':')[0])) && installedModels.length > 0 && (
                         <div className="mt-2 text-[10px] text-yellow-400">
-                          Warning: "{settings.ollamaModel}" is not installed. Pull it with:<br/>
-                          <code className="bg-black/30 px-1 rounded mt-1 block">docker exec ollama ollama pull {settings.ollamaModel}</code>
+                          Warning: "{settings.ollamaModel}" is not installed. Select an installed model above.
                         </div>
                       )}
                     </div>

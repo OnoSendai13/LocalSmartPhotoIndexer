@@ -348,6 +348,19 @@ async function processPhoto(photo: PhotoRow): Promise<void> {
     return;
   }
 
+  // Skip LLM if photo already has valid tags (from previous run or manual tagging)
+  try {
+    const existingTags = JSON.parse(photo.tags || '[]');
+    const validTags = existingTags.filter((t: string) => 
+      t && t !== 'Uncategorized' && t !== 'Error-EmptyResponse' && !t.startsWith('Error-')
+    );
+    if (validTags.length > 0) {
+      console.log(`⏭️ Skipping ${photo.name} — already has tags: [${validTags.join(', ')}]`);
+      markPhotoDone(photo.id, validTags, photo.thumbnail);
+      return;
+    }
+  } catch { /* ignore parse errors */ }
+
   // Resolve file path
   let fullPath = photo.path;
   if (!fullPath || !existsSync(fullPath)) {
