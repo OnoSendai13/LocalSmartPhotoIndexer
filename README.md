@@ -396,3 +396,4 @@ Migration is idempotent — running multiple times is safe.
 ### Known Issues
 - Server must be restarted after code updates to activate WAL mode changes
 - Monitor script requires 2+ seconds between checks to detect progress updates
+- EXIF writing may fail on Windows for paths with Unicode characters (French accents, etc.) — resolved via `realpathSync()` path resolution in `exif.ts`
