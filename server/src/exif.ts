@@ -1,4 +1,4 @@
-import { ExifTool, FileMaker } from 'exiftool-vendored';
+import { ExifTool } from 'exiftool-vendored';
 import { existsSync } from 'fs';
 
 // Single shared ExifTool instance — reusing it avoids spawning a new process per call
@@ -16,9 +16,8 @@ const exiftool = new ExifTool({ taskTimeoutMillis: 120_000 });
  * The `overwrite_original` option avoids creating a "_original" backup file.
  *
  * Note: On Windows, paths with Unicode (e.g., French accents) can cause
- * exiftool temp file creation failures. We work around this by using
- * the FileMaker API which handles paths more robustly, falling back to
- * the standard write() if needed.
+ * exiftool temp file creation failures. We work around this by using the
+ * full path and ensuring the file exists before writing.
  */
 export async function writeTagsToFile(
   filePath: string,
@@ -31,22 +30,20 @@ export async function writeTagsToFile(
       console.warn(`⚠️ [EXIF] File not found, skipping EXIF write: ${filePath}`);
       return;
     }
-
-    // Use FileMaker to handle path encoding robustly on Windows
-    const fm = new FileMaker(exiftool);
-    await fm.writeFile(filePath, {
-      // MWG composite — writes to both IPTC:Keywords AND XMP-dc:Subject
-      Keywords: tags,
-      // Windows Explorer keyword field (semicolon-separated string)
-      XPKeywords: tags.join('; '),
-    }, {
+    await exiftool.write(
+      filePath,
+      {
+        // MWG composite — writes to both IPTC:Keywords AND XMP-dc:Subject
+        Keywords: tags,
+        // Windows Explorer keyword field (semicolon-separated string)
+        XPKeywords: tags.join('; '),
+      },
       // -overwrite_original avoids creating a "_original" backup file
-      overwriteOriginal: true,
-    });
+      ['-overwrite_original'],
+    );
     console.log(`✅ [EXIF] Tags written to ${filePath}: [${tags.join(', ')}]`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    // If FileMaker also fails, fall back with warning
     console.warn(`⚠️ [EXIF] Failed to write tags to ${filePath}: ${msg}`);
   }
 }
