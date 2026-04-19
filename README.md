@@ -374,3 +374,25 @@ Migration is idempotent — running multiple times is safe.
 [Report Bug](https://github.com/OnoSendai13/LocalSmartPhotoIndexer/issues) | [Request Feature](https://github.com/OnoSendai13/LocalSmartPhotoIndexer/issues)
 
 </div>
+
+## History
+
+### Recent Changes
+
+#### SQLite WAL Optimizations (2026-04-19)
+- **Performance**: Implemented Write-Ahead Logging (WAL) mode for significantly faster photo indexing
+- **Incremental Backups**: Replaced full database exports (400MB+) with incremental WAL file backups
+- **Checkpointing**: Added automatic `PRAGMA wal_checkpoint(TRUNCATE)` after writes to release WAL files
+- **Crash Recovery**: Database state is now persisted across restarts; interrupted indexing resumes automatically
+- **Auto-restart**: Processing engine automatically resumes from pending photos after server restart or crash
+- **Progress Tracking**: Real-time progress monitoring via `monitor.sh` showing processed/total photo counts
+- **Reduced I/O**: Optimized `synchronous = NORMAL` and increased `cache_size` for better Windows NAS performance
+- **State Management**: Processing state (done/total/current photo) saved to database for recovery
+- **Worker Isolation**: Each photo processed independently; crashes in AI processing don't kill the server
+
+### Migration from v1 (IndexedDB → SQLite)
+- See [Migrating from v1](...) for steps to import existing data from IndexedDB backup
+
+### Known Issues
+- Server must be restarted after code updates to activate WAL mode changes
+- Monitor script requires 2+ seconds between checks to detect progress updates

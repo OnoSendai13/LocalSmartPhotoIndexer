@@ -33,26 +33,38 @@ let _frozen = false;
 let _saveTimeout = null;
 
 function save(): void {
-  if (_frozen) return;   // <-- key guard: block stale writes after a clear
+  if (_frozen) return;
   if (_db) {
     try {
-      const data = _db.export();
-      writeFileSync(dbPath, Buffer.from(data));
+      // ✅ Sauvegarde incrémentale via les fichiers WAL (beaucoup plus rapide que export())
+      const walPath = dbPath + '-wal';
+      const shmPath = dbPath + '-shm';
+      
+      if (existsSync(walPath)) {
+        try { copyFileSync(walPath, walPath + '.backup'); } catch(e) {}
+      }
+      if (existsSync(shmPath)) {
+        try { copyFileSync(shmPath, shmPath + '.backup'); } catch(e) {}
+      }
+      
+      // Forcer un checkpoint pour libérer le WAL
+      _db.run('PRAGMA wal_checkpoint(TRUNCATE)');
     } catch (err) {
-      console.error('[DB] Failed to save database:', err);
-      // Don't throw — a failed save shouldn't crash the entire process.
-      // The in-memory DB is still valid; the next save attempt may succeed.
+      console.error('[DB] Failed incremental save:', err);
     }
   }
-  // Debounce: save to disk after 100ms to batch multiple operations
+  // Debounce: esperar 100ms avant de sauver pour batchifier
   if (_saveTimeout) clearTimeout(_saveTimeout);
   _saveTimeout = setTimeout(() => {
     if (_db && !_frozen) {
       try {
-        const data = _db.export();
-        writeFileSync(dbPath, Buffer.from(data));
+        const walPath = dbPath + '-wal';
+        const shmPath = dbPath + '-shm';
+        if (existsSync(walPath)) copyFileSync(walPath, walPath + '.backup');
+        if (existsSync(shmPath)) copyFileSync(shmPath, shmPath + '.backup');
+        _db.run('PRAGMA wal_checkpoint(TRUNCATE)');
       } catch (err) {
-        console.error('[DB] Failed to save (debounced):', err);
+        console.error('[DB] Failed debounced save:', err);
       }
     }
     _saveTimeout = null;
