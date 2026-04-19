@@ -542,6 +542,11 @@ function markPhotoDone(photoId: string, tags: string[], thumbnail: string | null
 
   saveDb();
 
+  // Increment in-memory done counter so progress stays accurate
+  const st = getState();
+  _state!.done = st.done + 1;
+  saveProcessingState(_state!);
+
   // Write EXIF tags to file
   const photo = db.prepare('SELECT * FROM photos WHERE id = @id').get({ id: photoId }) as PhotoRow | undefined;
   if (photo && tags.length > 0) {
