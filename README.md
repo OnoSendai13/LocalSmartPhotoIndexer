@@ -393,7 +393,9 @@ Migration is idempotent — running multiple times is safe.
 ### Migration from v1 (IndexedDB → SQLite)
 - See [Migrating from v1](...) for steps to import existing data from IndexedDB backup
 
-### Known Issues
+### Known Issues / Resolved
 - Server must be restarted after code updates to activate WAL mode changes
 - Monitor script requires 2+ seconds between checks to detect progress updates
-- EXIF writing may fail on Windows for paths with Unicode characters (French accents, etc.) — resolved via `realpathSync()` path resolution in `exif.ts`
+- EXIF writing on Windows: Fixed Unicode path handling for files with special characters (French accents, etc.) via:
+  - `fs.existsSync()` check before attempting EXIF write
+  - `fs.realpathSync()` path resolution to handle Windows encoding
