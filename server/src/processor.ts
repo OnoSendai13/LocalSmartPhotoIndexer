@@ -14,12 +14,12 @@ import path from 'path';
 
 // ─── Configuration ─────────────────────────────────────────────────────────────
 
-const MAX_WORKERS = 4;           // Concurrent AI requests
-const THUMBNAIL_MAX_PX = 480;    // Same as frontend for consistency
-const JPEG_QUALITY = 0.88;
+const MAX_WORKERS = 1;           // Ollama handles 1 request efficiently
+const THUMBNAIL_MAX_PX = 224;    // Reduced for faster Ollama inference
+const JPEG_QUALITY = 0.7;
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'minicpm-v';
-const OLLAMA_TIMEOUT_MS = 120000; // 2 minute timeout per request
+const OLLAMA_TIMEOUT_MS = 300000; // 5 minute timeout per request
 const OLLAMA_MAX_RETRIES = 3;     // Retry on transient failures
 const OLLAMA_RETRY_DELAY_MS = 2000; // Wait between retries
 
@@ -465,19 +465,22 @@ Respond with ONLY a JSON array, no other text.`;
 
   let response;
   try {
-    response = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/generate`, {
+    response = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: OLLAMA_MODEL,
-        prompt,
-        stream: false,
-        images: [base64Data],
-        format: 'json',
-        options: {
-          temperature: 0.3,
-          top_p: 0.9,
-        },
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Data}` } }
+            ]
+          }
+        ],
+        max_tokens: 500,
+        temperature: 0.3,
       }),
       signal: controller.signal,
     });
@@ -485,12 +488,8 @@ Respond with ONLY a JSON array, no other text.`;
     clearTimeout(timeoutId);
   }
 
-  if (!response.ok) {
-    throw new Error(`Ollama error: ${response.status} ${response.statusText}`);
-  }
-
   const data = await response.json();
-  const responseText = data.response || '';
+  const responseText = data.choices?.[0]?.message?.content || data.response || '';
 
   // Parse tags from response
   try {

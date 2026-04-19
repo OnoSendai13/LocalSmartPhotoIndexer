@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import * as net from 'net';
+import { exec } from 'child_process';
 import { initDb, closeDb } from './db.js';
 import * as processor from './processor.js';
 import { photosRouter } from './routes/photos.js';
@@ -9,41 +10,100 @@ import { foldersRouter } from './routes/folders.js';
 import { settingsRouter } from './routes/settings.js';
 import { processorRouter } from './routes/processor.js';
 import { startAllWatchers, startPeriodicScans, stopAllWatchers } from './watcher.js';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, appendFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
-/** Check if port is free, wait if needed (max 10s). */
-async function ensurePortFree(port: number): Promise<void> {
-  const maxWait = 10000;
-  const start = Date.now();
-  
-  while (Date.now() - start < maxWait) {
-    const server = net.createServer();
-    const free = await new Promise<boolean>((resolve) => {
-      server.once('error', (err: NodeJS.ErrnoException) => {
-        resolve(err.code !== 'EADDRINUSE');
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const logFile = join(__dirname, '../data/server.log');
+
+function log(...args: unknown[]) {
+  const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+  const ts = new Date().toISOString().slice(11, 23);
+  const line = `${ts} ${msg}`;
+  console.log(msg);
+  try { appendFileSync(logFile, line + '\n'); } catch { /* ignore */ }
+}
+
+/** Find and kill any process using the given port. */
+async function killProcessOnPort(port: number): Promise<void> {
+  return new Promise((resolve) => {
+    const isWin = process.platform === 'win32';
+    if (isWin) {
+      exec(`powershell -Command "Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`, (err, stdout) => {
+        console.log(`[PORT] Killed processes on port ${port}`);
+        resolve();
       });
-      server.once('listening', () => {
-        server.close();
-        resolve(true);
+    } else {
+      exec(`lsof -ti:${port}`, (err, stdout) => {
+        if (err || !stdout.trim()) return resolve();
+        const pid = stdout.trim();
+        console.log(`[PORT] Killing process ${pid} on port ${port}`);
+        exec(`kill -9 ${pid}`, () => {});
+        setTimeout(resolve, 500);
       });
-      server.listen(port);
-    });
-    if (free) return;
-    console.warn(`[PORT] Port ${port} in use, waiting...`);
-    await new Promise(r => setTimeout(r, 1000));
-  }
-  console.error(`[PORT] Port ${port} still in use after ${maxWait}ms. Kill the process manually or change PORT in .env`);
-  process.exit(1);
+    }
+  });
 }
 
 const app = new Hono();
-const PORT = parseInt(process.env.PORT || '6800', 10);
+const DEFAULT_PORT = parseInt(process.env.PORT || '6800', 10);
+const PORT_RANGE_MIN = 6800;
+const PORT_RANGE_MAX = 7000;
 
-// CORS
+async function findFreePort(startPort: number): Promise<number> {
+  const net = await import('net');
+  for (let port = startPort; port <= PORT_RANGE_MAX; port++) {
+    const free = await new Promise<boolean>((resolve) => {
+      const server = net.createServer();
+      server.once('error', () => { server.close(); resolve(false); });
+      server.once('listening', () => { server.close(); resolve(true); });
+      server.listen(port, '0.0.0.0');
+    });
+    if (free) return port;
+  }
+  for (let port = PORT_RANGE_MIN; port < startPort; port++) {
+    const free = await new Promise<boolean>((resolve) => {
+      const server = net.createServer();
+      server.once('error', () => { server.close(); resolve(false); });
+      server.once('listening', () => { server.close(); resolve(true); });
+      server.listen(port, '0.0.0.0');
+    });
+    if (free) return port;
+  }
+  throw new Error(`No free port found in range ${PORT_RANGE_MIN}-${PORT_RANGE_MAX}`);
+}
+
+async function ensurePortFree(port: number): Promise<number> {
+  const net = await import('net');
+  for (let p = port; p <= PORT_RANGE_MAX; p++) {
+    const free = await new Promise<boolean>((resolve) => {
+      const server = net.createServer();
+      server.once('error', () => { server.close(); resolve(false); });
+      server.once('listening', () => { server.close(); resolve(true); });
+      server.listen(p, '0.0.0.0');
+    });
+    if (free) return p;
+  }
+  throw new Error(`No free port in range ${PORT_RANGE_MIN}-${PORT_RANGE_MAX}`);
+}
+
+// CORS — origin dynamically includes the actual port used
 app.use('/*', cors({
-  origin: ['http://localhost:5173', 'http://127.0.0.1:5173', `http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`],
+  origin: (origin, ctx) => {
+    const allowedOrigins = [
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+      `http://localhost:${process.env.PORT || 6800}`,
+      `http://127.0.0.1:${process.env.PORT || 6800}`,
+    ];
+    if (!origin || allowedOrigins.some(o => origin.startsWith(o))) {
+      ctx.header('Access-Control-Allow-Origin', origin || '*');
+      return true;
+    }
+    ctx.header('Access-Control-Allow-Origin', '*');
+    return true;
+  },
   credentials: true,
   maxAge: 86400,
 }));
@@ -58,7 +118,6 @@ app.route('/api', processorRouter);
 app.get('/api/health', (c) => c.json({ status: 'ok' }));
 
 // Serve built frontend from parent directory (npm run build output)
-const __dirname = dirname(fileURLToPath(import.meta.url));
 const distPath = join(__dirname, '../../dist');
 if (existsSync(distPath)) {
   // Serve static files from dist/
@@ -153,7 +212,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 async function start() {
-  await ensurePortFree(PORT);
+  const PORT = await ensurePortFree(DEFAULT_PORT);
 
   // Init SQLite (async — must load WASM first)
   await initDb();
@@ -182,18 +241,28 @@ async function start() {
   // Enable auto-restart for processor so indexing resumes after crashes
   processor.enableAutoRestart();
 
+  // Auto-start processing if there are pending photos
+  setTimeout(() => {
+    processor.startProcessing().catch(err => {
+      console.error('[STARTUP] Failed to auto-start processing:', err);
+    });
+  }, 2000);
+
   const server = serve({ fetch: app.fetch, port: PORT });
   console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`PORT=${PORT}`);
 }
 
+let shutdownReason = 'unknown';
 function shutdown() {
+  console.log(`[SHUTDOWN] Called — reason: ${shutdownReason}`);
   processor.stopProcessing();
   stopAllWatchers();
   closeDb();
   process.exit(0);
 }
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGINT', () => { shutdownReason = 'SIGINT'; shutdown(); });
+process.on('SIGTERM', () => { shutdownReason = 'SIGTERM'; shutdown(); });
 process.on('uncaughtException', (err) => {
   console.error('[FATAL] Uncaught exception:', err);
   console.error(err.stack);

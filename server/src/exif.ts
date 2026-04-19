@@ -1,7 +1,7 @@
 import { ExifTool } from 'exiftool-vendored';
 
 // Single shared ExifTool instance — reusing it avoids spawning a new process per call
-const exiftool = new ExifTool({ taskTimeoutMillis: 30_000 });
+const exiftool = new ExifTool({ taskTimeoutMillis: 120_000 });
 
 /**
  * Write AI-generated tags to a photo file's EXIF/IPTC/XMP metadata.
