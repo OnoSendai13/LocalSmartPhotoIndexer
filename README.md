@@ -396,8 +396,8 @@ Migration is idempotent — running multiple times is safe.
 ### Known Issues / Resolved
 - Server must be restarted after code updates to activate WAL mode changes
 - Monitor script requires 2+ seconds between checks to detect progress updates
-- EXIF writing on Windows: Fixed Unicode path handling for files with special characters (French accents, etc.) via:
-  - Using Windows long UNC path format (`\\?\`) to bypass MAX_PATH limit
-  - `fs.existsSync()` check before attempting EXIF write
+- EXIF writing: Fixed HTML entity encoding in database paths (e.g., `&eacute;` → `é`)
+  - Decode HTML entities before filesystem operations
+  - Works with Windows paths containing Unicode characters
   - Proper error handling and logging
   - Works with exiftool-vendored standard `write()` API
