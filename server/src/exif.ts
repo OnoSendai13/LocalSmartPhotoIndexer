@@ -5,6 +5,21 @@ import { existsSync } from 'fs';
 const exiftool = new ExifTool({ taskTimeoutMillis: 120_000 });
 
 /**
+ * Convert a path to Windows long UNC path format (\\?\ prefix) to avoid
+ * MAX_PATH limitations and Unicode encoding issues on Windows.
+ * Only applies on Windows and only for absolute paths.
+ */
+function toLongPath(path: string): string {
+  if (process.platform !== 'win32' || !path || !path.startsWith('\\')) {
+    return path;
+  }
+  // Already a long path
+  if (path.startsWith('\\\\?\\') || path.startsWith('\\?\\')) return path;
+  // Convert to absolute long path format
+  return '\\\\?\\' + path.replace(/^\\\\/, '');
+}
+
+/**
  * Write AI-generated tags to a photo file's EXIF/IPTC/XMP metadata.
  *
  * We write to two locations for maximum compatibility:
@@ -16,8 +31,8 @@ const exiftool = new ExifTool({ taskTimeoutMillis: 120_000 });
  * The `overwrite_original` option avoids creating a "_original" backup file.
  *
  * Note: On Windows, paths with Unicode (e.g., French accents) can cause
- * exiftool temp file creation failures. We work around this by using the
- * full path and ensuring the file exists before writing.
+ * exiftool temp file creation failures. We work around this by converting
+ * paths to Windows long UNC format (\\?\ prefix) which bypasses MAX_PATH.
  */
 export async function writeTagsToFile(
   filePath: string,
@@ -30,8 +45,10 @@ export async function writeTagsToFile(
       console.warn(`⚠️ [EXIF] File not found, skipping EXIF write: ${filePath}`);
       return;
     }
+    // Use long path format on Windows to avoid Unicode/MAX_PATH issues
+    const targetPath = toLongPath(filePath);
     await exiftool.write(
-      filePath,
+      targetPath,
       {
         // MWG composite — writes to both IPTC:Keywords AND XMP-dc:Subject
         Keywords: tags,
@@ -41,7 +58,7 @@ export async function writeTagsToFile(
       // -overwrite_original avoids creating a "_original" backup file
       ['-overwrite_original'],
     );
-    console.log(`✅ [EXIF] Tags written to ${filePath}: [${tags.join(', ')}]`);
+    console.log(`✅ [EXIF] Tags written to ${targetPath}: [${tags.join(', ')}]`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`⚠️ [EXIF] Failed to write tags to ${filePath}: ${msg}`);
