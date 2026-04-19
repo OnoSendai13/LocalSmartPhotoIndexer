@@ -1,5 +1,5 @@
 import { ExifTool } from 'exiftool-vendored';
-import { realpathSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
 
 // Single shared ExifTool instance — reusing it avoids spawning a new process per call
 const exiftool = new ExifTool({ taskTimeoutMillis: 120_000 });
@@ -24,6 +24,11 @@ export async function writeTagsToFile(
 ): Promise<void> {
   if (!tags || tags.length === 0) return;
   try {
+    // Check file exists before attempting EXIF write
+    if (!existsSync(filePath)) {
+      console.warn(`⚠️ [EXIF] File not found, skipping EXIF write: ${filePath}`);
+      return;
+    }
     // Resolve path through filesystem to handle Windows Unicode encoding
     const resolvedPath = realpathSync(filePath);
     await exiftool.write(
