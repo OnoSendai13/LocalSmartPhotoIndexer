@@ -19,6 +19,29 @@ function decodeHtmlEntities(str: string): string {
 }
 
 /**
+ * Resolve the actual filesystem path from a possibly-encoded path string.
+ * Handles: HTML entity decoding, and checks both the given path and common variants.
+ */
+function resolveActualPath(encodedPath: string): string {
+  let decoded = decodeHtmlEntities(encodedPath);
+
+  // If the decoded path exists, use it
+  if (existsSync(decoded)) return decoded;
+
+  // Try with forward slashes (in case DB uses backslashes)
+  const withForwardSlashes = decoded.replace(/\\/g, '/');
+  if (existsSync(withForwardSlashes)) return withForwardSlashes;
+
+  // Try relative to current directory
+  const basename = decoded.split(/[\\/]/).pop()!;
+  const cwd = process.cwd();
+  const inCwd = `${cwd}/${basename}`;
+  if (existsSync(inCwd)) return inCwd;
+
+  return decoded; // Return original even if not found - let exiftool handle the error
+}
+
+/**
  * Write AI-generated tags to a photo file's EXIF/IPTC/XMP metadata.
  *
  * Notes:
@@ -33,24 +56,24 @@ export async function writeTagsToFile(
 ): Promise<void> {
   if (!tags || tags.length === 0) return;
   try {
-    // Decode any HTML entities in the path
-    let decodedPath = filePath.split('/').map(decodeHtmlEntities).join('/');
+    // Resolve the actual filesystem path from the potentially-encoded input
+    const actualPath = resolveActualPath(filePath);
 
     // Check file exists before attempting EXIF write
-    if (!existsSync(decodedPath)) {
-      console.warn(`⚠️ [EXIF] File not found, skipping EXIF write: ${decodedPath}`);
+    if (!existsSync(actualPath)) {
+      console.warn(`⚠️ [EXIF] File not found, skipping EXIF write: ${actualPath}`);
       return;
     }
 
     await exiftool.write(
-      decodedPath,
+      actualPath,
       {
         Keywords: tags,
         XPKeywords: tags.join('; '),
       },
       ['-overwrite_original'],
     );
-    console.log(`✅ [EXIF] Tags written to ${decodedPath}: [${tags.join(', ')}]`);
+    console.log(`✅ [EXIF] Tags written to ${actualPath}: [${tags.join(', ')}]`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`⚠️ [EXIF] Failed to write tags to ${filePath}: ${msg}`);
