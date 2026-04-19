@@ -84,6 +84,21 @@ async function ensurePortFree(port: number): Promise<number> {
       server.listen(p, '0.0.0.0');
     });
     if (free) return p;
+    // Port busy — try to free it on Windows
+    const isWin = process.platform === 'win32';
+    if (isWin) {
+      await killProcessOnPort(p);
+      // Small wait for port to be released
+      await new Promise(r => setTimeout(r, 1000));
+      // Re-check quickly
+      const check = await new Promise<boolean>((resolve) => {
+        const s = net.createServer();
+        s.once('error', () => { s.close(); resolve(false); });
+        s.once('listening', () => { s.close(); resolve(true); });
+        s.listen(p, '0.0.0.0');
+      });
+      if (check) return p;
+    }
   }
   throw new Error(`No free port in range ${PORT_RANGE_MIN}-${PORT_RANGE_MAX}`);
 }
