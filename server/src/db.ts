@@ -30,6 +30,7 @@ let _SQLCtor: ReturnType<typeof import('sql.js').default> | null = null;
  * freshly-emptied on-disk file with stale data.
  */
 let _frozen = false;
+let _saveTimeout = null;
 
 function save(): void {
   if (_frozen) return;   // <-- key guard: block stale writes after a clear
@@ -43,6 +44,19 @@ function save(): void {
       // The in-memory DB is still valid; the next save attempt may succeed.
     }
   }
+  // Debounce: save to disk after 100ms to batch multiple operations
+  if (_saveTimeout) clearTimeout(_saveTimeout);
+  _saveTimeout = setTimeout(() => {
+    if (_db && !_frozen) {
+      try {
+        const data = _db.export();
+        writeFileSync(dbPath, Buffer.from(data));
+      } catch (err) {
+        console.error('[DB] Failed to save (debounced):', err);
+      }
+    }
+    _saveTimeout = null;
+  }, 100);
 }
 
 /** Force an immediate flush of the in-memory DB to disk. Call after bulk operations. */
@@ -310,6 +324,14 @@ export async function initDb(): Promise<Database> {
     _db = new SQL.Database(fileBuffer ?? undefined);
     _wrapper = new Database();
 
+    // 🔴 CRITICAL: Optimisations SQLite pour Windows NAS
+    _db.run("PRAGMA journal_mode = WAL");
+    _db.run("PRAGMA synchronous = NORMAL");
+    _db.run("PRAGMA cache_size = -128000");
+    _db.run("PRAGMA temp_store = FILE");
+    _db.run("PRAGMA mmap_size = 536870912");
+    _db.run("PRAGMA wal_autocheckpoint = 1000");
+    _db.run("PRAGMA wal_compress = ON");
     _db.run("PRAGMA foreign_keys = ON");
     _initSchema(_db);
     console.log(`SQLite (sql.js) initialised — ${dbPath}`);
