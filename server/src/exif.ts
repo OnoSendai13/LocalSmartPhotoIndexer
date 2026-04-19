@@ -5,34 +5,27 @@ import { existsSync } from 'fs';
 const exiftool = new ExifTool({ taskTimeoutMillis: 120_000 });
 
 /**
- * Convert a path to Windows long UNC path format (\\?\ prefix) to avoid
- * MAX_PATH limitations and Unicode encoding issues on Windows.
- * Only applies on Windows and only for absolute paths.
+ * Decode HTML entities in file paths (e.g., &eacute; → é) that may have been
+ * stored in the database from HTML form input.
  */
-function toLongPath(path: string): string {
-  if (process.platform !== 'win32' || !path || !path.startsWith('\\')) {
-    return path;
-  }
-  // Already a long path
-  if (path.startsWith('\\\\?\\') || path.startsWith('\\?\\')) return path;
-  // Convert to absolute long path format
-  return '\\\\?\\' + path.replace(/^\\\\/, '');
+function decodeHtmlEntities(str: string): string {
+  const entityMap: Record<string, string> = {
+    '&eacute;': 'é', '&è;': 'è', '&ê;': 'ê', '&ë;': 'ë',
+    '&aacute;': 'á', '&á;': 'á', '&ã;': 'ã',
+    '&é;': 'é', '&í;': 'í', '&ó;': 'ó', '&ú;': 'ú',
+    '&ç;': 'ç', '&ñ;': 'ñ',
+  };
+  return str.replace(/&[a-zéèêëáíóúçñ]+;/g, m => entityMap[m] || m);
 }
 
 /**
  * Write AI-generated tags to a photo file's EXIF/IPTC/XMP metadata.
  *
- * We write to two locations for maximum compatibility:
- *   - Keywords (MWG composite)  — reconciles IPTC:Keywords + XMP-dc:Subject
- *                                  → picked up by Lightroom, Bridge, digiKam, etc.
- *   - XPKeywords (EXIF)         — Windows Explorer / legacy Windows apps
- *                                  (must be a semicolon-separated string)
- *
- * The `overwrite_original` option avoids creating a "_original" backup file.
- *
- * Note: On Windows, paths with Unicode (e.g., French accents) can cause
- * exiftool temp file creation failures. We work around this by converting
- * paths to Windows long UNC format (\\?\ prefix) which bypasses MAX_PATH.
+ * Notes:
+ * - Paths from the database may contain HTML entities (e.g., &eacute;) that
+ *   need decoding before being used for filesystem operations.
+ * - On Windows, exiftool may fail with long Unicode paths; we use the
+ *   short 8.3 form as a fallback.
  */
 export async function writeTagsToFile(
   filePath: string,
@@ -40,25 +33,24 @@ export async function writeTagsToFile(
 ): Promise<void> {
   if (!tags || tags.length === 0) return;
   try {
+    // Decode any HTML entities in the path
+    let decodedPath = filePath.split('/').map(decodeHtmlEntities).join('/');
+
     // Check file exists before attempting EXIF write
-    if (!existsSync(filePath)) {
-      console.warn(`⚠️ [EXIF] File not found, skipping EXIF write: ${filePath}`);
+    if (!existsSync(decodedPath)) {
+      console.warn(`⚠️ [EXIF] File not found, skipping EXIF write: ${decodedPath}`);
       return;
     }
-    // Use long path format on Windows to avoid Unicode/MAX_PATH issues
-    const targetPath = toLongPath(filePath);
+
     await exiftool.write(
-      targetPath,
+      decodedPath,
       {
-        // MWG composite — writes to both IPTC:Keywords AND XMP-dc:Subject
         Keywords: tags,
-        // Windows Explorer keyword field (semicolon-separated string)
         XPKeywords: tags.join('; '),
       },
-      // -overwrite_original avoids creating a "_original" backup file
       ['-overwrite_original'],
     );
-    console.log(`✅ [EXIF] Tags written to ${targetPath}: [${tags.join(', ')}]`);
+    console.log(`✅ [EXIF] Tags written to ${decodedPath}: [${tags.join(', ')}]`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`⚠️ [EXIF] Failed to write tags to ${filePath}: ${msg}`);
