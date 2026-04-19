@@ -65,14 +65,43 @@ export async function writeTagsToFile(
       return;
     }
 
-    await exiftool.write(
-      actualPath,
-      {
-        Keywords: tags,
-        XPKeywords: tags.join('; '),
-      },
-      ['-overwrite_original'],
-    );
+    let attempts = 3
+  while (attempts-- > 0) {
+    try {
+      await exiftool.write(
+        actualPath,
+        {
+          Keywords: tags,
+          XPKeywords: tags.join('; '),
+        },
+        ['-overwrite_original'],
+      )
+      break // success
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('Temporary file already exists') && attempts > 0) {
+        // Clean up stale temp file and retry
+        try {
+          const path = require('path')
+          const fs = require('fs')
+          const dir = path.dirname(actualPath)
+          const base = path.basename(actualPath)
+          // Look for any _exiftool_tmp files in the same directory
+          if (fs.existsSync(dir)) {
+            const files = fs.readdirSync(dir)
+            files
+              .filter(f => f.includes(base) && f.includes('_exiftool_tmp'))
+              .forEach(f => {
+                try { fs.unlinkSync(path.join(dir, f)) } catch {} // clean up
+              })
+          }
+        } catch {} // ignore cleanup errors
+        await new Promise(r => setTimeout(r, 500)) // wait a bit before retry
+        continue
+      }
+      throw err
+    }
+  }
     console.log(`✅ [EXIF] Tags written to ${actualPath}: [${tags.join(', ')}]`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
