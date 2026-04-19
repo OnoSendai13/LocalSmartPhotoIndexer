@@ -1,4 +1,5 @@
 import { ExifTool } from 'exiftool-vendored';
+import { realpathSync } from 'fs';
 
 // Single shared ExifTool instance — reusing it avoids spawning a new process per call
 const exiftool = new ExifTool({ taskTimeoutMillis: 120_000 });
@@ -13,6 +14,9 @@ const exiftool = new ExifTool({ taskTimeoutMillis: 120_000 });
  *                                  (must be a semicolon-separated string)
  *
  * The `overwrite_original` option avoids creating a "_original" backup file.
+ *
+ * Note: On Windows, paths with Unicode (e.g., French accents) are resolved
+ * through realpathSync to avoid exiftool path encoding issues.
  */
 export async function writeTagsToFile(
   filePath: string,
@@ -20,8 +24,10 @@ export async function writeTagsToFile(
 ): Promise<void> {
   if (!tags || tags.length === 0) return;
   try {
+    // Resolve path through filesystem to handle Windows Unicode encoding
+    const resolvedPath = realpathSync(filePath);
     await exiftool.write(
-      filePath,
+      resolvedPath,
       {
         // MWG composite — writes to both IPTC:Keywords AND XMP-dc:Subject
         Keywords: tags,
@@ -31,7 +37,7 @@ export async function writeTagsToFile(
       // -overwrite_original avoids creating a "_original" backup file
       ['-overwrite_original'],
     );
-    console.log(`✅ [EXIF] Tags written to ${filePath}: [${tags.join(', ')}]`);
+    console.log(`✅ [EXIF] Tags written to ${resolvedPath}: [${tags.join(', ')}]`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`⚠️ [EXIF] Failed to write tags to ${filePath}: ${msg}`);
