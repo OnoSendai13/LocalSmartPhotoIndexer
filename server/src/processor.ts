@@ -245,12 +245,41 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
+function isAbsolutePathAnyPlatform(inputPath: string): boolean {
+  return path.isAbsolute(inputPath) || path.win32.isAbsolute(inputPath) || path.posix.isAbsolute(inputPath);
+}
+
+function buildPathCandidates(photo: PhotoRow): string[] {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+
+  const addCandidate = (candidate: string | null | undefined) => {
+    if (!candidate) return;
+    const trimmed = candidate.trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    candidates.push(trimmed);
+  };
+
+  addCandidate(photo.path);
+
+  // Bug fix: when `photo.path` is relative (legacy/imported rows),
+  // we must resolve it against `folder_path`.
+  if (photo.path && photo.folder_path && !isAbsolutePathAnyPlatform(photo.path)) {
+    addCandidate(path.join(photo.folder_path, photo.path));
+    addCandidate(path.win32.join(photo.folder_path, photo.path));
+    addCandidate(path.posix.join(photo.folder_path, photo.path));
+  }
+
+  addCandidate(path.win32.join(photo.folder_path, photo.name));
+  addCandidate(path.join(photo.folder_path, photo.name));
+  addCandidate(path.posix.join(photo.folder_path, photo.name));
+
+  return candidates;
+}
+
 async function resolvePhotoPath(photo: PhotoRow): Promise<string | null> {
-  const candidates = [
-    photo.path,
-    path.win32.join(photo.folder_path, photo.name),
-    path.join(photo.folder_path, photo.name),
-  ].filter(Boolean);
+  const candidates = buildPathCandidates(photo);
 
   for (const candidate of candidates) {
     if (await fileExists(candidate)) return candidate;
@@ -302,7 +331,8 @@ async function processPhoto(photo: PhotoRow): Promise<void> {
 
   const fullPath = await resolvePhotoPath(photo);
   if (!fullPath) {
-    throw new Error(`File not found: ${photo.name}`);
+    const attempted = buildPathCandidates(photo).join(' | ');
+    throw new Error(`File not found: ${photo.name} (folder=${photo.folder_path}, path=${photo.path}, attempted=${attempted})`);
   }
 
   const thumbnailPath = await persistThumbnail(photoId, fullPath);
