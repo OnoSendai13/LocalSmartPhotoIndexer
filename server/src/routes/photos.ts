@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { getDb, saveDb, nukeDb, isNuking, restoreDb, getBackupInfo } from '../db.js';
-import { writeTagsToFile } from '../exif.js';
+import { writeTagsToFile } from '../exif-fixed.js';
 import { resetWatchers, startAllWatchers, startPeriodicScans } from '../watcher.js';
 import path from 'path';
 import { existsSync, readFileSync, unlinkSync } from 'fs';

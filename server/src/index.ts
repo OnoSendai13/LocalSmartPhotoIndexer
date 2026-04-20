@@ -4,6 +4,7 @@ import { cors } from 'hono/cors';
 import * as net from 'net';
 import { exec } from 'child_process';
 import { initDb, closeDb } from './db.js';
+import { initTransactionLog } from './transaction-log.js';
 import * as processor from './processor.js';
 import { photosRouter } from './routes/photos.js';
 import { foldersRouter } from './routes/folders.js';
@@ -231,6 +232,8 @@ async function start() {
 
   // Init SQLite (async — must load WASM first)
   await initDb();
+
+  // Initialize transaction log for crash recovery (done in db.ts init)
 
   // BUG FIX #4: Reset any photos stuck in 'processing' state from a previous interrupted run
   try {
