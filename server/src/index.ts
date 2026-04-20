@@ -11,7 +11,8 @@ import { foldersRouter } from './routes/folders.js';
 import { settingsRouter } from './routes/settings.js';
 import { processorRouter } from './routes/processor.js';
 import { startAllWatchers, startPeriodicScans, stopAllWatchers } from './watcher.js';
-import { existsSync, readFileSync, appendFileSync } from 'fs';
+import { existsSync, appendFileSync } from 'fs';
+import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -161,14 +162,14 @@ if (existsSync(distPath)) {
       const contentType = ext ? (mimeTypes[ext] || 'application/octet-stream') : 'application/octet-stream';
       c.header('Content-Type', contentType);
       c.header('Cache-Control', 'public, max-age=31536000');
-      return c.body(readFileSync(filePath));
+      return c.body(await readFile(filePath));
     }
     
     // Fallback to index.html for SPA routing
     const indexPath = join(distPath, 'index.html');
     if (existsSync(indexPath)) {
       c.header('Content-Type', 'text/html');
-      return c.body(readFileSync(indexPath));
+      return c.body(await readFile(indexPath));
     }
     
     await next();
@@ -181,7 +182,7 @@ if (existsSync(distPath)) {
 // Debug: read DB state from disk (independent of in-memory state)
 app.get('/api/debug/db', async (c) => {
   try {
-    const { existsSync, readFileSync, statSync } = await import('fs');
+    const { existsSync, statSync } = await import('fs');
     const { join, dirname } = await import('path');
     const { fileURLToPath } = await import('url');
     const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -230,10 +231,11 @@ process.on('unhandledRejection', (reason) => {
 async function start() {
   const PORT = await ensurePortFree(DEFAULT_PORT);
 
-  // Init SQLite (async — must load WASM first)
+  // Init SQLite
   await initDb();
 
-  // Initialize transaction log for crash recovery (done in db.ts init)
+  // Ensure transaction log tables exist
+  initTransactionLog();
 
   // BUG FIX #4: Reset any photos stuck in 'processing' state from a previous interrupted run
   try {
@@ -272,22 +274,15 @@ async function start() {
 }
 
 let shutdownReason = 'unknown';
-function shutdown() {
+async function shutdown() {
   console.log(`[SHUTDOWN] Called — reason: ${shutdownReason}`);
-  processor.stopProcessing();
-  stopAllWatchers();
+  await processor.stopProcessing();
+  await stopAllWatchers();
   closeDb();
   process.exit(0);
 }
-process.on('SIGINT', () => { shutdownReason = 'SIGINT'; shutdown(); });
-process.on('SIGTERM', () => { shutdownReason = 'SIGTERM'; shutdown(); });
-process.on('uncaughtException', (err) => {
-  console.error('[FATAL] Uncaught exception:', err);
-  console.error(err.stack);
-});
-process.on('unhandledRejection', (reason) => {
-  console.error('[FATAL] Unhandled rejection:', reason);
-});
+process.on('SIGINT', () => { shutdownReason = 'SIGINT'; void shutdown(); });
+process.on('SIGTERM', () => { shutdownReason = 'SIGTERM'; void shutdown(); });
 
 start().catch(err => {
   console.error('Failed to start server:', err);

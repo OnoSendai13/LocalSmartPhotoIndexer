@@ -1,5 +1,5 @@
 import { watch } from 'chokidar';
-import { statSync, existsSync, readdirSync } from 'fs';
+import { stat, access, readdir } from 'fs/promises';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { getDb, isNuking } from './db.js';
@@ -13,29 +13,52 @@ let periodicInterval: ReturnType<typeof setInterval> | null = null;
 function getMimeType(filename: string): string {
   const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase();
   const map: Record<string, string> = {
-    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
-    '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.bmp': 'image/bmp',
   };
   return map[ext] || 'image/jpeg';
 }
 
-function addPhotoSync(folderId: string, folderPath: string, fullPath: string): boolean {
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function addPhoto(folderPath: string, fullPath: string): Promise<boolean> {
   if (isNuking()) return false;
 
   try {
     const db = getDb();
     const name = fullPath.split(/[/\\]/).pop() || fullPath;
 
-    const existing = db.prepare('SELECT id FROM photos WHERE folder_path = @fp AND name = @n').get({ fp: folderPath, n: name });
+    const existing = db
+      .prepare('SELECT id FROM photos WHERE folder_path = @fp AND name = @n')
+      .get({ fp: folderPath, n: name });
     if (existing) return false;
 
-    let stats;
-    try { stats = statSync(fullPath); } catch { return false; }
+    const stats = await stat(fullPath).catch(() => null);
+    if (!stats) return false;
 
     db.prepare(`
       INSERT INTO photos (id, name, path, folder_path, size, last_modified, mime_type, tags, status)
       VALUES (@id, @n, @rp, @fp, @sz, @lm, @mt, '[]', 'pending')
-    `).run({ id: randomUUID(), n: name, rp: fullPath, fp: folderPath, sz: stats.size, lm: Math.floor(stats.mtimeMs), mt: getMimeType(name) });
+    `).run({
+      id: randomUUID(),
+      n: name,
+      rp: fullPath,
+      fp: folderPath,
+      sz: stats.size,
+      lm: Math.floor(stats.mtimeMs),
+      mt: getMimeType(name),
+    });
 
     return true;
   } catch (err) {
@@ -47,58 +70,64 @@ function addPhotoSync(folderId: string, folderPath: string, fullPath: string): b
 export async function scanFolder(folderId: string, folderPath: string): Promise<{ newPhotos: number }> {
   if (isNuking()) return { newPhotos: 0 };
 
-  // Skip periodic scans while the AI processor is running to avoid I/O contention
   const { isProcessorRunning } = await import('./processor.js');
-  if (isProcessorRunning()) {
-    return { newPhotos: 0 };
-  }
+  if (isProcessorRunning()) return { newPhotos: 0 };
 
   let db;
-  try { db = getDb(); } catch { return { newPhotos: 0 }; }
-  if (!existsSync(folderPath)) return { newPhotos: 0 };
-
-  // Quick check: if DB already has photos for this folder, skip full scan (expensive)
-  const existingCount = (db.prepare('SELECT COUNT(*) as cnt FROM photos WHERE folder_path = @fp').get({ fp: folderPath }) as { cnt: number }).cnt;
-  if (existingCount > 0) {
-    console.log(`🔍 Skipping full scan — ${existingCount} photos already in DB for this folder`);
+  try {
+    db = getDb();
+  } catch {
     return { newPhotos: 0 };
   }
+
+  if (!(await fileExists(folderPath))) return { newPhotos: 0 };
 
   console.log(`🔍 Scanning: ${folderPath}`);
   let newPhotos = 0;
 
-  function scanDir(dirPath: string) {
+  const scanDir = async (dirPath: string): Promise<void> => {
     let entries;
-    try { entries = readdirSync(dirPath, { withFileTypes: true }); } catch { return; }
+    try {
+      entries = await readdir(dirPath, { withFileTypes: true });
+    } catch {
+      return;
+    }
 
     for (const entry of entries) {
       const full = join(dirPath, entry.name);
-      if (entry.isDirectory()) scanDir(full);
-      else if (entry.isFile()) {
+      if (entry.isDirectory()) {
+        await scanDir(full);
+      } else if (entry.isFile()) {
         const ext = entry.name.slice(entry.name.lastIndexOf('.')).toLowerCase();
-        if (IMAGE_EXTENSIONS.has(ext) && addPhotoSync(folderId, folderPath, full)) newPhotos++;
+        if (IMAGE_EXTENSIONS.has(ext) && (await addPhoto(folderPath, full))) newPhotos++;
       }
     }
-  }
+  };
 
   try {
-    scanDir(folderPath);
-    db.prepare('UPDATE folders SET last_scanned_at = unixepoch(\'now\') WHERE id = @id').run({ id: folderId });
+    await scanDir(folderPath);
+    db.prepare("UPDATE folders SET last_scanned_at = unixepoch('now') WHERE id = @id").run({ id: folderId });
   } catch (err) {
     console.error(`[WATCHER] Error during scan of ${folderPath}:`, err);
   }
+
   console.log(`✅ Scan done: ${newPhotos} new in ${folderPath}`);
   return { newPhotos };
 }
 
 export function startWatching(folderId: string, folderPath: string) {
-  stopWatching(folderId);
+  void stopWatching(folderId);
+
   const watcher = watch(folderPath, {
     ignored: (p: string) => !IMAGE_EXTENSIONS.has(p.slice(p.lastIndexOf('.')).toLowerCase()),
     ignoreInitial: true,
     depth: 99,
   });
-  watcher.on('add', (p: string) => addPhotoSync(folderId, folderPath, p));
+
+  watcher.on('add', (p: string) => {
+    void addPhoto(folderPath, p);
+  });
+
   watcher.on('unlink', (p: string) => {
     if (isNuking()) return;
     try {
@@ -108,12 +137,16 @@ export function startWatching(folderId: string, folderPath: string) {
       console.error(`[WATCHER] Failed to remove photo ${p}:`, err);
     }
   });
+
   watchers.set(folderId, watcher);
 }
 
 export async function stopWatching(folderId: string) {
   const w = watchers.get(folderId);
-  if (w) { await w.close(); watchers.delete(folderId); }
+  if (w) {
+    await w.close();
+    watchers.delete(folderId);
+  }
 }
 
 export async function stopAllWatchers() {
@@ -122,21 +155,19 @@ export async function stopAllWatchers() {
     promises.push(stopWatching(id));
   }
   await Promise.all(promises);
-  if (periodicInterval) { clearInterval(periodicInterval); periodicInterval = null; }
+  if (periodicInterval) {
+    clearInterval(periodicInterval);
+    periodicInterval = null;
+  }
 }
 
-/**
- * Stop all watchers AND the periodic interval, then clear the in-memory map.
- * Awaits each watcher.close() so chokidar callbacks are fully drained
- * before the database is nuked.
- */
 export async function resetWatchers() {
   await stopAllWatchers();
   watchers.clear();
 }
 
 export function startAllWatchers() {
-  const folders = getDb().prepare('SELECT * FROM folders').all() as { id: string; path: string }[];
+  const folders = getDb().prepare('SELECT id, path FROM folders').all() as { id: string; path: string }[];
   for (const f of folders) startWatching(f.id, f.path);
 }
 
@@ -145,10 +176,9 @@ export function startPeriodicScans() {
 
   const runScans = async () => {
     try {
-      const folders = getDb().prepare('SELECT * FROM folders').all() as { id: string; path: string }[];
-      // Run scans sequentially to avoid database contention
+      const folders = getDb().prepare('SELECT id, path FROM folders').all() as { id: string; path: string }[];
       for (const f of folders) {
-        await scanFolder(f.id, f.path).catch(err => {
+        await scanFolder(f.id, f.path).catch((err) => {
           console.error(`[WATCHER] Periodic scan error for folder "${f.path}":`, err);
         });
       }
@@ -157,5 +187,7 @@ export function startPeriodicScans() {
     }
   };
 
-  periodicInterval = setInterval(runScans, SCAN_INTERVAL_MS);
+  periodicInterval = setInterval(() => {
+    void runScans();
+  }, SCAN_INTERVAL_MS);
 }

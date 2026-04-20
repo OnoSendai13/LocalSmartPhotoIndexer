@@ -30,7 +30,7 @@ settingsRouter.get('/settings', (c) => {
 // GET /api/settings/:key
 settingsRouter.get('/settings/:key', (c) => {
   const db = getDb();
-  const row = db.prepare('SELECT * FROM settings WHERE key = @key').get({ key: c.req.param('key') }) as { key: string; value: string } | undefined;
+  const row = db.prepare('SELECT key, value FROM settings WHERE key = @key').get({ key: c.req.param('key') }) as { key: string; value: string } | undefined;
   if (!row) return c.json({ key: c.req.param('key'), value: null });
   return c.json({ key: row.key, value: JSON.parse(row.value) });
 });

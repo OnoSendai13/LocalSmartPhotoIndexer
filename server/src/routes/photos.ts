@@ -1,11 +1,29 @@
 import { Hono } from 'hono';
-import { getDb, saveDb, nukeDb, isNuking, restoreDb, getBackupInfo } from '../db.js';
-import { writeTagsToFile } from '../exif-fixed.js';
+import { getDb, nukeDb, isNuking, restoreDb, getBackupInfo, backupDb, getDbPath } from '../db.js';
+import { writeTagsToFile, readTagsFromFile } from '../exif.js';
 import { resetWatchers, startAllWatchers, startPeriodicScans } from '../watcher.js';
 import path from 'path';
-import { existsSync, readFileSync, unlinkSync } from 'fs';
+import { access, readFile, stat } from 'fs/promises';
+import { existsSync } from 'fs';
 
 export const photosRouter = new Hono();
+
+const PHOTO_COLUMNS = `
+  id,
+  name,
+  path,
+  folder_path,
+  size,
+  last_modified,
+  mime_type,
+  tags,
+  status,
+  thumbnail,
+  indexed_at,
+  error_message,
+  created_at,
+  updated_at
+`;
 
 interface PhotoRow {
   id: string;
@@ -41,6 +59,20 @@ interface Photo {
   updatedAt: number;
 }
 
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function toPublicThumbnailUrl(photoId: string, thumbnailPath: string | null): string | undefined {
+  if (!thumbnailPath) return undefined;
+  return `/api/photos/${encodeURIComponent(photoId)}/thumbnail`;
+}
+
 function rowToPhoto(row: PhotoRow): Photo {
   return {
     id: row.id,
@@ -52,7 +84,7 @@ function rowToPhoto(row: PhotoRow): Photo {
     mimeType: row.mime_type,
     tags: JSON.parse(row.tags || '[]'),
     status: row.status as Photo['status'],
-    thumbnail: row.thumbnail ?? undefined,
+    thumbnail: toPublicThumbnailUrl(row.id, row.thumbnail),
     indexedAt: row.indexed_at ?? undefined,
     errorMessage: row.error_message ?? undefined,
     createdAt: row.created_at,
@@ -60,16 +92,15 @@ function rowToPhoto(row: PhotoRow): Photo {
   };
 }
 
-// GET /api/photos?status=done&folderPath=...&tag=...&limit=200&offset=0
 photosRouter.get('/photos', (c) => {
   const db = getDb();
   const status = c.req.query('status');
   const folderPath = c.req.query('folderPath');
   const tag = c.req.query('tag');
-  const limit = Math.min(parseInt(c.req.query('limit') || '200', 10), 500);
+  const limit = Math.min(parseInt(c.req.query('limit') || '100', 10), 100);
   const offset = Math.max(parseInt(c.req.query('offset') || '0', 10), 0);
 
-  let sql = 'SELECT * FROM photos WHERE 1=1';
+  let sql = `SELECT ${PHOTO_COLUMNS} FROM photos WHERE 1=1`;
   const params: Record<string, unknown> = {};
 
   if (status) {
@@ -93,7 +124,6 @@ photosRouter.get('/photos', (c) => {
   return c.json(rows.map(rowToPhoto));
 });
 
-// GET /api/photos/count?status=...&folderPath=... — returns total count for pagination
 photosRouter.get('/photos/count', (c) => {
   const db = getDb();
   const status = c.req.query('status');
@@ -115,11 +145,12 @@ photosRouter.get('/photos/count', (c) => {
   return c.json({ total: result.cnt });
 });
 
-// GET /api/photos/tags — returns all unique tags with counts (for sidebar)
 photosRouter.get('/photos/tags', (c) => {
   const db = getDb();
-  // Get all tags from done photos
-  const rows = db.prepare("SELECT tags FROM photos WHERE status = 'done' AND tags != '[]'").all() as { tags: string }[];
+  const rows = db
+    .prepare("SELECT tags FROM photos WHERE status = 'done' AND tags != '[]'")
+    .all() as { tags: string }[];
+
   const tagCounts = new Map<string, number>();
   for (const row of rows) {
     try {
@@ -129,30 +160,37 @@ photosRouter.get('/photos/tags', (c) => {
           tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
         }
       }
-    } catch { /* skip malformed */ }
+    } catch {
+      // ignore malformed
+    }
   }
+
   const result = Array.from(tagCounts.entries())
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => b.count - a.count);
+
   return c.json(result);
 });
 
-// GET /api/photos/:id
 photosRouter.get('/photos/:id', (c) => {
   const db = getDb();
-  const row = db.prepare('SELECT * FROM photos WHERE id = @id').get({ id: c.req.param('id') }) as PhotoRow | undefined;
+  const row = db
+    .prepare(`SELECT ${PHOTO_COLUMNS} FROM photos WHERE id = @id`)
+    .get({ id: c.req.param('id') }) as PhotoRow | undefined;
   if (!row) return c.json({ error: 'Photo not found' }, 404);
   return c.json(rowToPhoto(row));
 });
 
-// PUT /api/photos/:id — update tags, status, error_message
 photosRouter.put('/photos/:id', async (c) => {
   if (isNuking()) return c.json({ error: 'Operation blocked — database is being cleared' }, 503);
+
   const db = getDb();
   const body = await c.req.json();
   const id = c.req.param('id');
 
-  const existing = db.prepare('SELECT * FROM photos WHERE id = @id').get({ id }) as PhotoRow | undefined;
+  const existing = db
+    .prepare(`SELECT ${PHOTO_COLUMNS} FROM photos WHERE id = @id`)
+    .get({ id }) as PhotoRow | undefined;
   if (!existing) return c.json({ error: 'Photo not found' }, 404);
 
   const updates: string[] = [];
@@ -162,22 +200,20 @@ photosRouter.put('/photos/:id', async (c) => {
     updates.push('tags = @tags');
     params.tags = JSON.stringify(body.tags);
 
-    // BUG FIX #3: Use absolute path stored in row.path first; fall back to folder_path + name
     let fullPath = existing.path;
-    if (!fullPath || !existsSync(fullPath)) {
+    if (!fullPath || !(await fileExists(fullPath))) {
       fullPath = path.join(existing.folder_path, existing.name);
     }
-    if (existsSync(fullPath)) {
+    if (await fileExists(fullPath)) {
       void writeTagsToFile(fullPath, body.tags);
-    } else {
-      console.warn(`[EXIF] File not found for EXIF write: ${fullPath}`);
     }
   }
-  // Accept thumbnail update — only overwrite if a non-empty value is provided
-  if (body.thumbnail) {
+
+  if (body.thumbnail !== undefined) {
     updates.push('thumbnail = @thumbnail');
-    params.thumbnail = body.thumbnail;
+    params.thumbnail = typeof body.thumbnail === 'string' ? body.thumbnail : null;
   }
+
   if (body.status !== undefined) {
     updates.push('status = @status');
     params.status = body.status;
@@ -186,38 +222,45 @@ photosRouter.put('/photos/:id', async (c) => {
       params.indexedAt = Math.floor(Date.now() / 1000);
     }
   }
+
   if (body.errorMessage !== undefined) {
     updates.push('error_message = @errorMessage');
     params.errorMessage = body.errorMessage;
   }
 
   if (updates.length === 0) return c.json({ error: 'No fields to update' }, 400);
-  updates.push("updated_at = unixepoch('now')");
 
+  updates.push("updated_at = unixepoch('now')");
   db.prepare(`UPDATE photos SET ${updates.join(', ')} WHERE id = @id`).run(params);
 
   return c.json({ success: true });
 });
 
-// POST /api/photos — upsert photo(s) in batch
-// INSERT OR REPLACE handles conflicts on BOTH (id) and (folder_path, name),
-// ensuring no duplicate rows regardless of whether the frontend uses DB UUIDs
-// or generated IDs (MODE B — path inaccessible).
 photosRouter.post('/photos', async (c) => {
   if (isNuking()) return c.json({ error: 'Operation blocked — database is being cleared' }, 503);
+
   const db = getDb();
   const body = await c.req.json();
   const photos: Photo[] = Array.isArray(body) ? body : [body];
 
   const upsert = db.prepare(`
-    INSERT OR REPLACE INTO photos
+    INSERT INTO photos
       (id, name, path, folder_path, size, last_modified, mime_type, tags, status, thumbnail, indexed_at, error_message, created_at, updated_at)
     VALUES
-      (@id, @name, @path, @folderPath, @size, @lastModified, @mimeType, @tags, @status,
-       COALESCE(@thumbnail, (SELECT thumbnail FROM photos WHERE id=@id)),
-       @indexedAt, @errorMessage,
-       COALESCE((SELECT created_at FROM photos WHERE id=@id), unixepoch('now')),
-       unixepoch('now'))
+      (@id, @name, @path, @folderPath, @size, @lastModified, @mimeType, @tags, @status, @thumbnail, @indexedAt, @errorMessage, unixepoch('now'), unixepoch('now'))
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      path = excluded.path,
+      folder_path = excluded.folder_path,
+      size = excluded.size,
+      last_modified = excluded.last_modified,
+      mime_type = excluded.mime_type,
+      tags = excluded.tags,
+      status = excluded.status,
+      thumbnail = COALESCE(excluded.thumbnail, photos.thumbnail),
+      indexed_at = excluded.indexed_at,
+      error_message = excluded.error_message,
+      updated_at = unixepoch('now')
   `);
 
   const upsertMany = db.transaction((items: Photo[]) => {
@@ -241,15 +284,13 @@ photosRouter.post('/photos', async (c) => {
 
   upsertMany(photos);
 
-  // Trigger EXIF write for any photos that are 'done' and have tags
   for (const item of photos) {
     if (item.status === 'done' && item.tags && item.tags.length > 0) {
       let filePath = item.path;
-      if (!filePath || !existsSync(filePath)) {
+      if (!filePath || !(await fileExists(filePath))) {
         filePath = path.join(item.folderPath, item.name);
       }
-      if (filePath && existsSync(filePath)) {
-        const { writeTagsToFile } = await import('../exif.js');
+      if (filePath && (await fileExists(filePath))) {
         void writeTagsToFile(filePath, item.tags);
       }
     }
@@ -258,34 +299,35 @@ photosRouter.post('/photos', async (c) => {
   return c.json({ success: true, count: photos.length });
 });
 
-// DELETE /api/photos/:id
 photosRouter.delete('/photos/:id', (c) => {
   const db = getDb();
   db.prepare('DELETE FROM photos WHERE id = @id').run({ id: c.req.param('id') });
   return c.json({ success: true });
 });
 
-// POST /api/photos/queue/reset-processing — reset 'processing' -> 'pending' on startup
 photosRouter.post('/photos/queue/reset-processing', (c) => {
   const db = getDb();
-  const info = db.prepare(
-    "UPDATE photos SET status = 'pending', updated_at = unixepoch('now') WHERE status = 'processing'"
-  ).run();
-  console.log(`[STARTUP] Reset ${info.changes} 'processing' photos back to 'pending'`);
+  const info = db
+    .prepare("UPDATE photos SET status = 'pending', updated_at = unixepoch('now') WHERE status = 'processing'")
+    .run() as { changes: number };
   return c.json({ success: true, reset: info.changes });
 });
 
-// GET /api/photos/queue/pending
 photosRouter.get('/photos/queue/pending', (c) => {
   const db = getDb();
-  const limit = parseInt(c.req.query('limit') || '50');
-  const rows = db.prepare(
-    "SELECT * FROM photos WHERE status = 'pending' ORDER BY created_at ASC LIMIT @limit"
-  ).all({ limit }) as PhotoRow[];
+  const limit = Math.min(parseInt(c.req.query('limit') || '50', 10), 100);
+  const rows = db
+    .prepare(`
+      SELECT ${PHOTO_COLUMNS}
+      FROM photos
+      WHERE status = 'pending'
+      ORDER BY created_at ASC
+      LIMIT @limit
+    `)
+    .all({ limit }) as PhotoRow[];
   return c.json(rows.map(rowToPhoto));
 });
 
-// GET /api/stats
 photosRouter.get('/stats', async (c) => {
   const db = getDb();
   const total = (db.prepare('SELECT COUNT(*) as count FROM photos').get() as { count: number }).count;
@@ -299,30 +341,28 @@ photosRouter.get('/stats', async (c) => {
   for (const row of rows) {
     try {
       for (const tag of JSON.parse(row.tags) as string[]) tagSet.add(tag);
-    } catch { /* skip */ }
+    } catch {
+      // ignore
+    }
   }
 
-  const folders = db.prepare('SELECT DISTINCT folder_path as path, name FROM photos ORDER BY path').all();
+  const folders = db
+    .prepare('SELECT path, name FROM folders ORDER BY registered_at DESC')
+    .all() as { path: string; name: string }[];
 
   let dbFileSize = 0;
   let dbFileExists = false;
   try {
-    const { statSync, existsSync } = await import('fs');
-    const { join, dirname } = await import('path');
-    const { fileURLToPath } = await import('url');
-    const __dirname = dirname(fileURLToPath(import.meta.url));
-    const dbFile = join(__dirname, '../data', 'photo-index.db');
-    dbFileExists = existsSync(dbFile);
-    if (dbFileExists) {
-      dbFileSize = statSync(dbFile).size;
-    }
-  } catch { /* ignore */ }
+    const info = await stat(getDbPath());
+    dbFileSize = info.size;
+    dbFileExists = true;
+  } catch {
+    // ignore
+  }
 
   const avgPhotoSize = total > 0 ? Math.round(dbFileSize / total) : 0;
   const health: 'ok' | 'warning' | 'critical' =
-    dbFileSize === 0 ? 'ok' :
-    avgPhotoSize > 100000 ? 'critical' :
-    avgPhotoSize > 50000 ? 'warning' : 'ok';
+    dbFileSize === 0 ? 'ok' : avgPhotoSize > 100000 ? 'critical' : avgPhotoSize > 50000 ? 'warning' : 'ok';
 
   return c.json({
     totalPhotos: total,
@@ -343,30 +383,45 @@ photosRouter.get('/stats', async (c) => {
   });
 });
 
-// GET /api/photos/:id/preview
-photosRouter.get('/photos/:id/preview', (c) => {
+photosRouter.get('/photos/:id/thumbnail', async (c) => {
+  const row = getDb()
+    .prepare('SELECT id, thumbnail FROM photos WHERE id = @id')
+    .get({ id: c.req.param('id') }) as { id: string; thumbnail: string | null } | undefined;
+
+  if (!row || !row.thumbnail) return c.json({ error: 'Thumbnail not found' }, 404);
+
+  if (!(await fileExists(row.thumbnail))) return c.json({ error: 'Thumbnail file missing' }, 404);
+
+  const buffer = await readFile(row.thumbnail);
+  c.header('Content-Type', 'image/jpeg');
+  c.header('Cache-Control', 'public, max-age=86400');
+  return c.body(buffer);
+});
+
+photosRouter.get('/photos/:id/preview', async (c) => {
   try {
-    const row = getDb().prepare('SELECT * FROM photos WHERE id = @id').get({ id: c.req.param('id') }) as PhotoRow | undefined;
+    const row = getDb()
+      .prepare('SELECT id, name, path, folder_path, mime_type, thumbnail FROM photos WHERE id = @id')
+      .get({ id: c.req.param('id') }) as
+      | { id: string; name: string; path: string; folder_path: string; mime_type: string; thumbnail: string | null }
+      | undefined;
+
     if (!row) return c.json({ error: 'Not found' }, 404);
 
-    // Try to serve the real file from disk first
     let fullPath = row.path;
-    if (!fullPath || !existsSync(fullPath)) {
+    if (!fullPath || !(await fileExists(fullPath))) {
       fullPath = path.join(row.folder_path, row.name);
     }
-    if (fullPath && existsSync(fullPath)) {
-      const buffer = readFileSync(fullPath);
+
+    if (fullPath && (await fileExists(fullPath))) {
+      const buffer = await readFile(fullPath);
       c.header('Content-Type', row.mime_type);
       c.header('Cache-Control', 'public, max-age=86400');
       return c.body(buffer);
     }
 
-    // File not on disk (e.g. Windows path, server on different OS) —
-    // fall back to the base64 thumbnail stored in the DB.
-    if (row.thumbnail) {
-      // thumbnail is stored as a data URL: "data:image/jpeg;base64,..."
-      const base64 = row.thumbnail.includes(',') ? row.thumbnail.split(',')[1] : row.thumbnail;
-      const buf = Buffer.from(base64, 'base64');
+    if (row.thumbnail && (await fileExists(row.thumbnail))) {
+      const buf = await readFile(row.thumbnail);
       c.header('Content-Type', 'image/jpeg');
       c.header('Cache-Control', 'public, max-age=86400');
       return c.body(buf);
@@ -378,9 +433,9 @@ photosRouter.get('/photos/:id/preview', (c) => {
   }
 });
 
-// POST /api/photos/import — bulk import from JSON backup
 photosRouter.post('/photos/import', async (c) => {
   if (isNuking()) return c.json({ error: 'Operation blocked — database is being cleared' }, 503);
+
   const db = getDb();
   const body = await c.req.json<{ photos: Photo[]; settings?: Record<string, unknown> }>();
   let photosImported = 0;
@@ -388,9 +443,10 @@ photosRouter.post('/photos/import', async (c) => {
   if (body.photos && Array.isArray(body.photos)) {
     const insert = db.prepare(`
       INSERT OR IGNORE INTO photos
-        (id, name, path, folder_path, size, last_modified, mime_type, tags, status, indexed_at, error_message)
-      VALUES (@id, @name, @path, @folderPath, @size, @lastModified, @mimeType, @tags, @status, @indexedAt, @errorMessage)
+        (id, name, path, folder_path, size, last_modified, mime_type, tags, status, thumbnail, indexed_at, error_message)
+      VALUES (@id, @name, @path, @folderPath, @size, @lastModified, @mimeType, @tags, @status, @thumbnail, @indexedAt, @errorMessage)
     `);
+
     const tx = db.transaction((items: Photo[]) => {
       for (const item of items) {
         const result = insert.run({
@@ -403,9 +459,10 @@ photosRouter.post('/photos/import', async (c) => {
           mimeType: item.mimeType,
           tags: JSON.stringify(item.tags || []),
           status: item.status || 'pending',
+          thumbnail: item.thumbnail || null,
           indexedAt: item.indexedAt ? Math.floor(item.indexedAt / 1000) : null,
           errorMessage: item.errorMessage || null,
-        });
+        }) as { changes: number };
         if (result.changes > 0) photosImported++;
       }
     });
@@ -415,95 +472,87 @@ photosRouter.post('/photos/import', async (c) => {
   return c.json({ success: true, photosImported });
 });
 
-// DELETE /api/photos/all — wipe everything using nukeDb for reliability
 photosRouter.delete('/photos/all', async (c) => {
-  console.log('[CLEAR] Nuclear clear starting...');
-
   try {
     await resetWatchers();
-    console.log('[CLEAR] Watchers stopped.');
   } catch (e) {
     console.warn('[CLEAR] resetWatchers error:', e);
   }
 
   const beforeCount = getDb().prepare('SELECT COUNT(*) as cnt FROM photos').get() as { cnt: number };
   const beforeFolders = getDb().prepare('SELECT COUNT(*) as cnt FROM folders').get() as { cnt: number };
-  console.log(`[CLEAR] Before: ${beforeCount.cnt} photos, ${beforeFolders.cnt} folders`);
 
   try {
-    nukeDb();
-    console.log('[CLEAR] ✅ nukeDb completed');
+    await nukeDb();
   } catch (e) {
-    console.error('[CLEAR] ❌ nukeDb failed:', e);
     return c.json({ success: false, error: String(e) }, 500);
   }
 
-  console.log(`[CLEAR] ✅ Cleared ${beforeCount.cnt} photos and ${beforeFolders.cnt} folders`);
-
   return c.json({
     success: true,
-    message: "Database cleared",
+    message: 'Database cleared',
     photosCleared: beforeCount.cnt,
     foldersCleared: beforeFolders.cnt,
   });
 });
 
-// POST /api/photos/clear-errors — clear only photos with error status
 photosRouter.post('/photos/clear-errors', (c) => {
   const db = getDb();
   const errors = db.prepare("SELECT COUNT(*) as cnt FROM photos WHERE status = 'error'").get() as { cnt: number };
-  const result = db.prepare("DELETE FROM photos WHERE status = 'error'").run();
-  saveDb();
-  console.log(`[CLEAR] Cleared ${result.changes} error photos`);
+  const result = db.prepare("DELETE FROM photos WHERE status = 'error'").run() as { changes: number };
   return c.json({ success: true, cleared: result.changes, totalErrors: errors.cnt });
 });
 
-// POST /api/photos/reset-all — reset all done/error photos to pending (keeps folders)
 photosRouter.post('/photos/reset-all', (c) => {
   const db = getDb();
   const done = db.prepare("SELECT COUNT(*) as cnt FROM photos WHERE status = 'done'").get() as { cnt: number };
   const errors = db.prepare("SELECT COUNT(*) as cnt FROM photos WHERE status = 'error'").get() as { cnt: number };
-  const result = db.prepare("UPDATE photos SET status = 'pending', error_message = NULL, updated_at = unixepoch('now') WHERE status IN ('done', 'error')").run();
-  saveDb();
-  console.log(`[RESET] Reset ${result.changes} photos to pending (done: ${done.cnt}, errors: ${errors.cnt})`);
+  const result = db
+    .prepare("UPDATE photos SET status = 'pending', error_message = NULL, updated_at = unixepoch('now') WHERE status IN ('done', 'error')")
+    .run() as { changes: number };
   return c.json({ success: true, reset: result.changes, doneCount: done.cnt, errorCount: errors.cnt });
 });
 
-// POST /api/photos/reset-errors — reset only error photos to pending (for retry)
 photosRouter.post('/photos/reset-errors', (c) => {
   const db = getDb();
   const errors = db.prepare("SELECT COUNT(*) as cnt FROM photos WHERE status = 'error'").get() as { cnt: number };
-  const result = db.prepare("UPDATE photos SET status = 'pending', error_message = NULL, updated_at = unixepoch('now') WHERE status = 'error'").run();
-  saveDb();
-  console.log(`[RESET] Reset ${result.changes} error photos to pending for retry`);
+  const result = db
+    .prepare("UPDATE photos SET status = 'pending', error_message = NULL, updated_at = unixepoch('now') WHERE status = 'error'")
+    .run() as { changes: number };
   return c.json({ success: true, reset: result.changes, errorCount: errors.cnt });
 });
 
-// POST /api/photos/sync-exif
-// Reads EXIF/IPTC/XMP tags from each photo file and:
-//   1. Injects them into the DB for photos that have no tags yet (status='done' or status='pending' with no tags)
-//   2. Re-writes the EXIF metadata for photos that have DB tags but no file metadata
-// Returns per-photo results so the frontend can show a summary.
 photosRouter.post('/photos/sync-exif', async (c) => {
   const db = getDb();
-  const { readTagsFromFile, writeTagsToFile } = await import('../exif.js');
-  const { existsSync } = await import('fs');
 
-  const body = await c.req.json<{ mode?: 'read' | 'write' | 'both'; folderPath?: string }>().catch(() => ({ mode: undefined, folderPath: undefined }));
-  const mode = (body as { mode?: string }).mode ?? 'both';
-  const folderPath = (body as { folderPath?: string }).folderPath;
+  const body = await c.req
+    .json<{ mode?: 'read' | 'write' | 'both'; folderPath?: string }>()
+    .catch(() => ({ mode: undefined, folderPath: undefined }));
 
-  // Fetch all photos that have a real absolute path
-  let sql = "SELECT * FROM photos WHERE path != '' AND path IS NOT NULL";
+  const mode = body.mode ?? 'both';
+  const folderPath = body.folderPath;
+
+  let sql = `
+    SELECT id, name, path, folder_path, tags
+    FROM photos
+    WHERE path != '' AND path IS NOT NULL
+  `;
   const params: Record<string, unknown> = {};
   if (folderPath) {
     sql += ' AND folder_path = @folderPath';
     params.folderPath = folderPath;
   }
-  const rows = db.prepare(sql).all(params) as PhotoRow[];
 
-  let injected = 0;   // tags read from file → saved to DB
-  let written = 0;    // tags from DB → written to file
+  const rows = db.prepare(sql).all(params) as Array<{
+    id: string;
+    name: string;
+    path: string;
+    folder_path: string;
+    tags: string;
+  }>;
+
+  let injected = 0;
+  let written = 0;
   let skipped = 0;
   let missing = 0;
 
@@ -518,32 +567,31 @@ photosRouter.post('/photos/sync-exif', async (c) => {
 
   for (const row of rows) {
     let filePath = row.path;
-    if (!filePath || !existsSync(filePath)) {
+    if (!filePath || !(await fileExists(filePath))) {
       filePath = path.join(row.folder_path, row.name);
     }
-    if (!filePath || !existsSync(filePath)) { missing++; continue; }
+    if (!filePath || !(await fileExists(filePath))) {
+      missing++;
+      continue;
+    }
 
     const dbTags: string[] = JSON.parse(row.tags || '[]');
     const hasDbTags = dbTags.length > 0;
 
-    // READ mode: inject file metadata tags into DB when DB has no tags
     if ((mode === 'read' || mode === 'both') && !hasDbTags) {
       const fileTags = await readTagsFromFile(filePath);
       if (fileTags.length > 0) {
         updateTags.run({ id: row.id, tags: JSON.stringify(fileTags) });
         injected++;
-        console.log(`📥 [sync-exif] Injected from file: ${row.name} → [${fileTags.join(', ')}]`);
-        continue; // no need to also write back
+        continue;
       }
     }
 
-    // WRITE mode: push DB tags to file when file has no metadata tags
     if ((mode === 'write' || mode === 'both') && hasDbTags) {
       const fileTags = await readTagsFromFile(filePath);
       if (fileTags.length === 0) {
         await writeTagsToFile(filePath, dbTags);
         written++;
-        console.log(`📤 [sync-exif] Written to file: ${row.name} → [${dbTags.join(', ')}]`);
       } else {
         skipped++;
       }
@@ -552,34 +600,34 @@ photosRouter.post('/photos/sync-exif', async (c) => {
     }
   }
 
-  console.log(`[sync-exif] Done: ${injected} injected, ${written} written, ${skipped} skipped, ${missing} missing`);
   return c.json({ success: true, injected, written, skipped, missing, total: rows.length });
 });
 
-// POST /api/photos/rewrite-exif
-// Force-rewrites EXIF tags for ALL photos that have tags in DB, regardless of what's on disk.
-// Useful after a path migration or first-time setup where files had no metadata.
 photosRouter.post('/photos/rewrite-exif', async (c) => {
   const db = getDb();
-  const { writeTagsToFile } = await import('../exif.js');
-  const { existsSync } = await import('fs');
-
   const body2 = await c.req.json<{ folderPath?: string }>().catch(() => ({ folderPath: undefined }));
-  const folderPath = (body2 as { folderPath?: string }).folderPath;
+  const folderPath = body2.folderPath;
 
-  let sql = "SELECT * FROM photos WHERE tags != '[]' AND tags IS NOT NULL AND path != ''";
+  let sql = "SELECT id, name, path, folder_path, tags FROM photos WHERE tags != '[]' AND tags IS NOT NULL AND path != ''";
   const params: Record<string, unknown> = {};
-  if (folderPath) { sql += ' AND folder_path = @folderPath'; params.folderPath = folderPath; }
+  if (folderPath) {
+    sql += ' AND folder_path = @folderPath';
+    params.folderPath = folderPath;
+  }
 
-  const rows = db.prepare(sql).all(params) as PhotoRow[];
-  let written = 0; let missing = 0;
+  const rows = db.prepare(sql).all(params) as Array<{ id: string; name: string; path: string; folder_path: string; tags: string }>;
+  let written = 0;
+  let missing = 0;
 
   for (const row of rows) {
     let filePath = row.path;
-    if (!filePath || !existsSync(filePath)) {
+    if (!filePath || !(await fileExists(filePath))) {
       filePath = path.join(row.folder_path, row.name);
     }
-    if (!filePath || !existsSync(filePath)) { missing++; continue; }
+    if (!filePath || !(await fileExists(filePath))) {
+      missing++;
+      continue;
+    }
     const tags: string[] = JSON.parse(row.tags || '[]');
     if (tags.length > 0) {
       await writeTagsToFile(filePath, tags);
@@ -587,13 +635,9 @@ photosRouter.post('/photos/rewrite-exif', async (c) => {
     }
   }
 
-  console.log(`[rewrite-exif] ${written} files updated, ${missing} missing`);
   return c.json({ success: true, written, missing, total: rows.length });
 });
 
-// POST /api/photos/analyze — proxy to Ollama (avoids CORS / Docker networking issues)
-// Accepts base64 image data and returns AI-generated tags.
-// The backend calls Ollama running in Docker and relays the response.
 photosRouter.post('/photos/analyze', async (c) => {
   try {
     const body = await c.req.json<{
@@ -603,46 +647,29 @@ photosRouter.post('/photos/analyze', async (c) => {
       model?: string;
     }>();
 
-    if (!body.base64Data) {
-      return c.json({ error: 'base64Data is required' }, 400);
-    }
+    if (!body.base64Data) return c.json({ error: 'base64Data is required' }, 400);
 
     const ollamaUrl = body.ollamaUrl || 'http://localhost:11434';
     const model = body.model || 'minicpm-v';
 
-    // Simple and direct prompt
-    const prompt = `/no_think
-What do you see in this image? Answer with a JSON array of tags.
+    const prompt = `/no_think\nWhat do you see in this image? Return ONLY a JSON array of tags.`;
 
-Choose from these categories:
-- People: Portrait, Group, Family, Couple, Selfie
-- Scene: Landscape, Cityscape, Beach, Mountain, Forest, Garden, Street
-- Location: Indoor, Outdoor, Home, Restaurant, Museum, Church
-- Weather: Sunny, Cloudy, Sunset, Sunrise, Night
-- Activity: Walking, Posing, Eating, Traveling, Sports
-- Objects: Car, Food, Flower, Architecture, Art, Statue
-
-Return ONLY a JSON array like: ["Family", "Outdoor", "Sunny", "Garden"]
-No explanation, just the JSON array.`;
-
-    const requestBody = {
-      model: model,
-      prompt: prompt,
+    const requestBody: Record<string, unknown> = {
+      model,
+      prompt,
       images: [body.base64Data],
       stream: false,
       options: {
         temperature: 0.3,
         num_predict: 500,
-      }
+      },
     };
 
     if (!model.includes('qwen3-vl')) {
-      (requestBody as Record<string, unknown>).format = "json";
+      requestBody.format = 'json';
     }
 
     const endpoint = `${ollamaUrl.replace(/\/$/, '')}/api/generate`;
-    console.log(`🦙 [Proxy] Calling Ollama at ${endpoint} with model ${model}`);
-
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -651,118 +678,82 @@ No explanation, just the JSON array.`;
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`❌ [Proxy] Ollama API Error:`, errorText);
       return c.json({ error: `Ollama error: ${response.statusText}`, details: errorText }, response.status as 502);
     }
 
     const data = await response.json();
-    console.log(`📦 [Proxy] Ollama response received`);
-
-    return c.json({
-      success: true,
-      response: data.response || '',
-      thinking: data.thinking || null,
-    });
+    return c.json({ success: true, response: data.response || '', thinking: data.thinking || null });
   } catch (error) {
-    console.error('❌ [Proxy] Failed to call Ollama:', error);
-    return c.json({
-      error: 'Failed to connect to Ollama',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    }, 502);
+    return c.json(
+      { error: 'Failed to connect to Ollama', details: error instanceof Error ? error.message : 'Unknown error' },
+      502,
+    );
   }
 });
 
-// GET /api/ollama/models — proxy to get installed Ollama models
 photosRouter.get('/ollama/models', async (c) => {
   try {
     const ollamaUrl = c.req.query('url') || 'http://localhost:11434';
     const endpoint = `${ollamaUrl.replace(/\/$/, '')}/api/tags`;
 
     const response = await fetch(endpoint);
-    if (!response.ok) {
-      return c.json({ error: 'Failed to fetch models from Ollama' }, response.status as 502);
-    }
+    if (!response.ok) return c.json({ error: 'Failed to fetch models from Ollama' }, response.status as 502);
 
     const data = await response.json();
-    return c.json({
-      success: true,
-      models: (data.models || []).map((m: any) => m.name),
-    });
+    return c.json({ success: true, models: (data.models || []).map((m: { name: string }) => m.name) });
   } catch (error) {
-    console.error('❌ [Proxy] Failed to fetch Ollama models:', error);
-    return c.json({
-      error: 'Failed to connect to Ollama',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    }, 502);
+    return c.json(
+      { error: 'Failed to connect to Ollama', details: error instanceof Error ? error.message : 'Unknown error' },
+      502,
+    );
   }
 });
 
-// POST /api/ollama/health — check if Ollama is reachable via backend
 photosRouter.post('/ollama/health', async (c) => {
   try {
     const ollamaUrl = (await c.req.json()).ollamaUrl || 'http://localhost:11434';
     const endpoint = `${ollamaUrl.replace(/\/$/, '')}/api/tags`;
 
     const response = await fetch(endpoint, { method: 'GET' });
-    if (!response.ok) {
-      return c.json({ connected: false, error: `HTTP ${response.status}` });
-    }
+    if (!response.ok) return c.json({ connected: false, error: `HTTP ${response.status}` });
 
     return c.json({ connected: true });
   } catch (error) {
-    return c.json({
-      connected: false,
-      error: error instanceof Error ? error.message : 'Unknown error'
-    });
+    return c.json({ connected: false, error: error instanceof Error ? error.message : 'Unknown error' });
   }
 });
 
-// POST /api/db/backup — create a manual backup of the current database
-photosRouter.post('/db/backup', (c) => {
+photosRouter.post('/db/backup', async (c) => {
   try {
-    const { copyFileSync, existsSync, statSync } = require('fs');
-    const { join, dirname } = require('path');
-    const { fileURLToPath } = require('url');
-    const __dirname = dirname(fileURLToPath(import.meta.url));
-    const dbFile = join(__dirname, '../data', 'photo-index.db');
-    const backupFile = dbFile + '.bak';
+    const dbFile = getDbPath();
+    const backupFile = `${dbFile}.bak`;
 
-    if (existsSync(dbFile)) {
-      if (existsSync(backupFile)) {
-        unlinkSync(backupFile);
-      }
-      copyFileSync(dbFile, backupFile);
-      const stats = statSync(backupFile);
-      console.log(`[BACKUP] 💾 Manual backup created: ${backupFile} (${stats.size} bytes)`);
-      return c.json({
-        success: true,
-        message: 'Backup created',
-        sizeBytes: stats.size,
-        sizeMB: (stats.size / (1024 * 1024)).toFixed(2),
-        createdAt: new Date(stats.mtimeMs).toLocaleString(),
-      });
-    } else {
-      return c.json({ success: false, error: 'Database file not found' }, 404);
-    }
+    if (!existsSync(dbFile)) return c.json({ success: false, error: 'Database file not found' }, 404);
+
+    backupDb();
+    const stats = await stat(backupFile);
+
+    return c.json({
+      success: true,
+      message: 'Backup created',
+      sizeBytes: stats.size,
+      sizeMB: (stats.size / (1024 * 1024)).toFixed(2),
+      createdAt: new Date(stats.mtimeMs).toLocaleString(),
+    });
   } catch (e) {
-    console.error('[BACKUP] ❌ Failed:', e);
     return c.json({ success: false, error: String(e) }, 500);
   }
 });
 
-// GET /api/db/backup-info — get information about the current backup file
 photosRouter.get('/db/backup-info', (c) => {
   const info = getBackupInfo();
   return c.json(info);
 });
 
-// POST /api/db/restore — restore database from backup
 photosRouter.post('/db/restore', async (c) => {
   if (isNuking()) {
     return c.json({ success: false, error: 'Operation blocked — database is being cleared' }, 503);
   }
-
-  console.log('[RESTORE] Starting database restore from backup...');
 
   try {
     await resetWatchers();

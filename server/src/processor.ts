@@ -1,12 +1,10 @@
 /**
- * Fixed background photo processing engine with transaction-based state management.
+ * Background photo processing engine.
  */
 
-import { getDb, saveDb } from './db.js';
-import { writeTagsToFile, closeExifTool } from './exif-fixed.js';
-import { resizeToThumbnail, isRawFormat, getMimeType } from './image.js';
-import { findClosestTag, validateTags } from './tags.js';
-import { existsSync, readdirSync } from 'fs';
+import { getDb, getThumbnailsDir } from './db.js';
+import { resizeToThumbnailBuffer, isRawFormat } from './image.js';
+import { access, readdir, writeFile } from 'fs/promises';
 import path from 'path';
 import { analyzeWithOllama } from './services/ollamaService.js';
 import {
@@ -19,19 +17,9 @@ import {
   markPhotoDoneWithTransaction,
 } from './transaction-log.js';
 
-
-// ─── Configuration ─────────────────────────────────────────────────────────────
-
 const MAX_WORKERS = 1;
-const THUMBNAIL_MAX_PX = 224;
-const JPEG_QUALITY = 0.7;
-const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'minicpm-v';
-const OLLAMA_TIMEOUT_MS = 300000;
 const OLLAMA_MAX_RETRIES = 3;
 const OLLAMA_RETRY_DELAY_MS = 2000;
-
-// ─── State ─────────────────────────────────────────────────────────────────────
 
 let _state: ProcessingState | null = null;
 let activeWorkers = 0;
@@ -39,8 +27,6 @@ let isRunning = false;
 let stopRequested = false;
 let autoRestartEnabled = false;
 let autoRestartTimeout: ReturnType<typeof setTimeout> | null = null;
-
-// ─── Types ─────────────────────────────────────────────────────────────────────
 
 export interface ProcessingStatus {
   status: 'idle' | 'running' | 'stopping';
@@ -68,8 +54,6 @@ interface PhotoRow {
   updated_at: number;
 }
 
-// ─── Public API ────────────────────────────────────────────────────────────────
-
 export function isProcessorRunning(): boolean {
   return isRunning;
 }
@@ -82,12 +66,13 @@ export async function startProcessing(): Promise<{ success: true; total: number 
 
   console.log('[PROCESSOR] Starting photo processing...');
 
-  // Replay any pending transactions from previous crash
   const replayed = replayPendingTransactions();
   console.log(`[TRANSACTION] Replayed ${replayed} pending transactions`);
 
   const db = getDb();
-  const result = db.prepare('SELECT COUNT(*) as cnt FROM photos WHERE status = @status').get({ status: 'pending' }) as { cnt: number };
+  const result = db
+    .prepare('SELECT COUNT(*) as cnt FROM photos WHERE status = @status')
+    .get({ status: 'pending' }) as { cnt: number };
   const pendingCount = result.cnt;
 
   if (pendingCount === 0) {
@@ -106,54 +91,65 @@ export async function startProcessing(): Promise<{ success: true; total: number 
   };
   saveProcessingStateWithTransaction(_state);
 
-  console.log(`[PROCESSOR] Processing ${pendingCount} pending photos with ${MAX_WORKERS} workers...`);
+  console.log(`[PROCESSOR] Processing ${pendingCount} pending photos with ${MAX_WORKERS} worker(s)...`);
 
   const workers: Promise<{ errors: number }>[] = [];
   for (let i = 0; i < MAX_WORKERS; i++) {
     workers.push(runWorker());
   }
 
-  Promise.all(workers).then((results) => {
-    isRunning = false;
-    _state = { status: 'idle', done: 0, total: 0, currentPhoto: '', startTime: null };
-    saveProcessingStateWithTransaction(_state);
-    const totalErrors = results.reduce((sum, r) => sum + r.errors, 0);
-    const s = getState();
-    console.log(`[PROCESSOR] ✅ All processing complete! Indexed ${s.done - totalErrors} photos, ${totalErrors} errors.`);
-    if (autoRestartEnabled) checkAndAutoRestart();
-  }).catch((err) => {
-    console.error('[PROCESSOR] Worker promise chain error:', err);
-  });
+  void Promise.all(workers)
+    .then((results) => {
+      isRunning = false;
+      const doneState = getState();
+      _state = { status: 'idle', done: 0, total: 0, currentPhoto: '', startTime: null };
+      saveProcessingStateWithTransaction(_state);
+      const totalErrors = results.reduce((sum, r) => sum + r.errors, 0);
+      console.log(`[PROCESSOR] ✅ Complete. Indexed ${doneState.done - totalErrors} photos, ${totalErrors} errors.`);
+      if (autoRestartEnabled) checkAndAutoRestart();
+    })
+    .catch((err) => {
+      console.error('[PROCESSOR] Worker promise chain error:', err);
+    });
 
   return { success: true, total: pendingCount };
 }
 
 export async function stopProcessing(): Promise<void> {
-  if (!isRunning) {
-    return;
-  }
+  if (!isRunning) return;
 
   console.log('[PROCESSOR] Stopping processing (draining active workers)...');
   disableAutoRestart();
   stopRequested = true;
-  _state = { status: 'stopping', done: getState().done, total: getState().total, currentPhoto: '', startTime: getState().startTime };
+
+  const state = getState();
+  _state = {
+    status: 'stopping',
+    done: state.done,
+    total: state.total,
+    currentPhoto: '',
+    startTime: state.startTime,
+  };
   saveProcessingStateWithTransaction(_state);
 
-  const timeout = new Promise<void>((resolve) => {
-    setTimeout(() => {
-      console.warn('[PROCESSOR] Force stop after 30s timeout');
-      isRunning = false;
-      resolve();
-    }, 30000);
-  });
+  const timeoutId = setTimeout(() => {
+    console.warn('[PROCESSOR] Force stop after 30s timeout');
+    isRunning = false;
+  }, 30000);
 
   while (activeWorkers > 0 && stopRequested) {
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 200));
   }
 
-  clearTimeout(timeout as any);
+  clearTimeout(timeoutId);
   isRunning = false;
-  _state = { status: 'idle', done: getState().done, total: getState().total, currentPhoto: '', startTime: null };
+  _state = {
+    status: 'idle',
+    done: getState().done,
+    total: getState().total,
+    currentPhoto: '',
+    startTime: null,
+  };
   saveProcessingStateWithTransaction(_state);
   console.log('[PROCESSOR] Stopped.');
 }
@@ -173,7 +169,7 @@ export function getProgress(): ProcessingStatus {
 
 export function enableAutoRestart(): void {
   autoRestartEnabled = true;
-  console.log('[PROCESSOR] Auto-restart enabled — will resume if processing stops with pending photos');
+  console.log('[PROCESSOR] Auto-restart enabled');
 }
 
 export function disableAutoRestart(): void {
@@ -182,18 +178,21 @@ export function disableAutoRestart(): void {
     clearTimeout(autoRestartTimeout);
     autoRestartTimeout = null;
   }
-  console.log('[PROCESSOR] Auto-restart disabled');
 }
 
-// ─── Internal: Worker Loop ─────────────────────────────────────────────────────
+export async function resetAllDone(): Promise<{ success: true; reset: number }> {
+  const db = getDb();
+  const result = db
+    .prepare("UPDATE photos SET status='pending', error_message = NULL, updated_at = unixepoch('now') WHERE status IN ('done','error')")
+    .run() as { changes: number };
+  return { success: true, reset: result.changes };
+}
 
 async function runWorker(): Promise<{ errors: number }> {
   let errors = 0;
   while (!stopRequested) {
     const photo = pickNextPhoto();
-    if (!photo) {
-      break;
-    }
+    if (!photo) break;
 
     activeWorkers++;
     try {
@@ -211,18 +210,21 @@ async function runWorker(): Promise<{ errors: number }> {
 
 function pickNextPhoto(): PhotoRow | null {
   const db = getDb();
-  const row = db.prepare(`
-    SELECT * FROM photos
-    WHERE status = 'pending'
-    ORDER BY created_at ASC
-    LIMIT 1
-  `).get() as PhotoRow | undefined;
+  const row = db
+    .prepare(`
+      SELECT id, name, path, folder_path, size, last_modified, mime_type, tags, status, thumbnail, indexed_at, error_message, created_at, updated_at
+      FROM photos
+      WHERE status = 'pending'
+      ORDER BY created_at ASC
+      LIMIT 1
+    `)
+    .get() as PhotoRow | undefined;
 
   if (!row) return null;
 
   writeTransaction({
     type: 'state_update',
-    data: { status: 'processing' },
+    data: { status: 'processing', photoId: row.id },
   });
 
   db.prepare(`
@@ -230,74 +232,100 @@ function pickNextPhoto(): PhotoRow | null {
     SET status = 'processing', updated_at = unixepoch('now')
     WHERE id = @id
   `).run({ id: row.id });
-  saveDb();
 
   return row;
 }
 
-// ─── Internal: Process One Photo ──────────────────────────────────────────────
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolvePhotoPath(photo: PhotoRow): Promise<string | null> {
+  const candidates = [
+    photo.path,
+    path.win32.join(photo.folder_path, photo.name),
+    path.join(photo.folder_path, photo.name),
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (await fileExists(candidate)) return candidate;
+  }
+
+  const found = await findFileRecursive(photo.folder_path, photo.name);
+  return found;
+}
+
+async function persistThumbnail(photoId: string, filePath: string): Promise<string> {
+  const thumbDir = getThumbnailsDir();
+  const targetPath = path.join(thumbDir, `${photoId}.jpg`);
+  const { buffer } = await resizeToThumbnailBuffer(filePath);
+  await writeFile(targetPath, buffer);
+  return targetPath;
+}
 
 async function processPhoto(photo: PhotoRow): Promise<void> {
-  const db = getDb();
   const photoId = photo.id;
 
   if (isRawFormat(photo.name)) {
     console.log(`⏭️ Skipping unsupported format: ${photo.name}`);
-    markPhotoDoneWithTransaction(photoId, [], null);
+    markPhotoDoneWithTransaction(photoId, [], photo.thumbnail);
+    incrementProgress();
     return;
   }
 
-  // Try to load existing tags from DB first (skip reprocessing if valid)
   try {
     const existingTags = JSON.parse(photo.tags || '[]');
-    const validTags = existingTags.filter((t: string) =>
-      t && t !== 'Uncategorized' && t !== 'Error-EmptyResponse' && !t.startsWith('Error-')
+    const validTags = existingTags.filter(
+      (t: string) => t && t !== 'Uncategorized' && t !== 'Error-EmptyResponse' && !t.startsWith('Error-'),
     );
     if (validTags.length > 0) {
       console.log(`⏭️ Skipping ${photo.name} — already has valid tags: [${validTags.join(', ')}]`);
-      markPhotoDoneWithTransaction(photoId, validTags, photo.thumbnail);
+      let thumbnailPath = photo.thumbnail || null;
+      if (!thumbnailPath) {
+        const existingPath = await resolvePhotoPath(photo);
+        if (existingPath) {
+          thumbnailPath = await persistThumbnail(photoId, existingPath);
+        }
+      }
+      markPhotoDoneWithTransaction(photoId, validTags, thumbnailPath);
+      incrementProgress();
       return;
     }
-  } catch { /* ignore parse errors */ }
-
-  let fullPath = photo.path;
-  if (!existsSync(fullPath)) {
-    fullPath = path.win32.join(photo.folder_path, photo.name);
-  }
-  if (!existsSync(fullPath)) {
-    fullPath = photo.folder_path + '/' + photo.name;
-  }
-  if (!existsSync(fullPath)) {
-    console.warn(`[PROCESSOR] Path not found, searching recursively: ${photo.name}`);
-    const found = findFileRecursive(photo.folder_path, photo.name);
-    if (found) {
-      fullPath = found;
-      console.log(`[PROCESSOR] ✅ Found via recursive search: ${found}`);
-    }
+  } catch {
+    // ignore parse errors
   }
 
-  if (!existsSync(fullPath)) {
+  const fullPath = await resolvePhotoPath(photo);
+  if (!fullPath) {
     throw new Error(`File not found: ${photo.name}`);
   }
 
-  const { base64, mimeType } = await resizeToThumbnail(fullPath);
-  const thumbnailDataUrl = `data:${mimeType};base64,${base64}`;
+  const thumbnailPath = await persistThumbnail(photoId, fullPath);
+  const thumbnailBuffer = await resizeToThumbnailBuffer(fullPath);
+  const tags = await analyzeWithOllamaRetry(thumbnailBuffer.buffer.toString('base64'), thumbnailBuffer.mimeType);
 
-  const tags = await analyzeWithOllamaRetry(base64, mimeType);
-  console.log(`✅ Tags for ${photo.name}:`, tags);
-
-  markPhotoDoneWithTransaction(photoId, tags, thumbnailDataUrl);
-
-  const st = getState();
-  _state!.done = st.done + 1;
-  saveProcessingStateWithTransaction(_state!);
-
-  if (_state!.done % 10 === 0 || _state!.done === _state!.total) {
-    const pct = _state!.total > 0 ? ((_state!.done / _state!.total) * 100).toFixed(1) : '0.0';
-    console.log(`📊 Progress: ${_state!.done}/${_state!.total} (${pct}%)`);
-  }
-
+  markPhotoDoneWithTransaction(photoId, tags, thumbnailPath);
+  incrementProgress();
   createCheckpointTransaction('periodic_checkpoint');
+}
+
+function incrementProgress(): void {
+  const st = getState();
+  _state = {
+    ...st,
+    done: st.done + 1,
+  };
+  saveProcessingStateWithTransaction(_state);
+
+  if (_state.done % 10 === 0 || _state.done === _state.total) {
+    const pct = _state.total > 0 ? ((_state.done / _state.total) * 100).toFixed(1) : '0.0';
+    console.log(`📊 Progress: ${_state.done}/${_state.total} (${pct}%)`);
+  }
 }
 
 async function analyzeWithOllamaRetry(base64Data: string, mimeType: string): Promise<string[]> {
@@ -316,8 +344,7 @@ async function analyzeWithOllamaRetry(base64Data: string, mimeType: string): Pro
 
       if (attempt < OLLAMA_MAX_RETRIES) {
         const delay = OLLAMA_RETRY_DELAY_MS * attempt;
-        console.log(`[OLLAMA] Retrying in ${delay / 1000}s...`);
-        await new Promise(r => setTimeout(r, delay));
+        await new Promise((r) => setTimeout(r, delay));
       }
     }
   }
@@ -325,24 +352,22 @@ async function analyzeWithOllamaRetry(base64Data: string, mimeType: string): Pro
   throw lastError || new Error('Ollama unavailable');
 }
 
-// ─── Internal: File Search ────────────────────────────────────────────────────
-
-function findFileRecursive(dirPath: string, fileName: string): string | null {
+async function findFileRecursive(dirPath: string, fileName: string): Promise<string | null> {
   try {
-    const entries = readdirSync(dirPath, { withFileTypes: true });
+    const entries = await readdir(dirPath, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        const found = findFileRecursive(path.join(dirPath, entry.name), fileName);
+        const found = await findFileRecursive(path.join(dirPath, entry.name), fileName);
         if (found) return found;
       } else if (entry.name === fileName) {
         return path.join(dirPath, entry.name);
       }
     }
-  } catch { /* ignore permission errors */ }
+  } catch {
+    // ignore permission/path errors
+  }
   return null;
 }
-
-// ─── Internal: State Management ──────────────────────────────────────────────
 
 function getState(): ProcessingState {
   if (!_state) {
@@ -359,20 +384,27 @@ interface ProcessingState {
   startTime: number | null;
 }
 
-// ─── Cleanup ───────────────────────────────────────────────────────────────────
+function checkAndAutoRestart(): void {
+  if (!autoRestartEnabled || isRunning || stopRequested) return;
+
+  const db = getDb();
+  const pending = db.prepare("SELECT COUNT(*) as cnt FROM photos WHERE status='pending'").get() as { cnt: number };
+  if (pending.cnt === 0) return;
+
+  if (autoRestartTimeout) clearTimeout(autoRestartTimeout);
+  autoRestartTimeout = setTimeout(() => {
+    if (!isRunning && autoRestartEnabled) {
+      void startProcessing().catch((err) => {
+        console.error('[PROCESSOR] Auto-restart failed:', err);
+      });
+    }
+  }, 1500);
+}
 
 const shutdown = (reason: string) => {
   console.log(`[SHUTDOWN] Reason: ${reason}`);
-  stopProcessing().catch(() => {});
+  void stopProcessing().catch(() => {});
 };
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('uncaughtException', (err) => {
-  console.error('[FATAL] Uncaught exception:', err);
-  shutdown('uncaughtException');
-});
-process.on('unhandledRejection', (reason) => {
-  console.error('[FATAL] Unhandled rejection:', reason);
-  shutdown('unhandledRejection');
-});
